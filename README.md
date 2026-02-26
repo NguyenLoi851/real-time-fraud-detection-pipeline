@@ -98,15 +98,15 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 - `docker/`: docker compose and service Dockerfiles
 - `dashboards/`: BI definitions and KPI documentation
 
-## 6) Execution Roadmap (Not Too Detailed)
+## 6) Execution Roadmap
 
-1. Set up local dev with Docker (Kafka, Spark, Airflow) and create Terraform skeleton for GCP.
-2. Download and profile dataset; document schema and feature plan.
-3. Build CSV event simulator and publish to Kafka raw topic.
-4. Build Spark streaming scoring job and alert topic flow.
+1. Download and profile dataset; document schema and feature plan.
+2. Set up only the simulator + Kafka locally with Docker, then publish CSV events to `transactions_raw`.
+3. Add Spark local setup with Docker and build streaming scoring + alert topic flow.
+4. Create Terraform skeleton and provision core GCP resources (GCS + BigQuery foundations).
 5. Land raw/scored data in GCS and load curated outputs to BigQuery.
-6. Build dbt fact/dimension models in BigQuery.
-7. Create Airflow DAGs for orchestration (stream start, batch jobs, dbt, retrain).
+6. Add dbt setup and build fact/dimension models in BigQuery.
+7. Add Airflow setup and create DAGs for orchestration (batch jobs, dbt, retrain).
 8. Add model monitoring + periodic retraining workflow.
 9. Build Looker Studio dashboard for fraud metrics and pipeline health.
 
@@ -125,7 +125,3 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 - Data drift between historical and simulated/streaming data.
 - Late-arriving labels and mismatch during reconciliation.
 - Cost/performance tuning for Spark, BigQuery, and storage.
-
----
-
-This README is your implementation plan and architecture baseline. Start with MVP, then iterate by improving model quality, observability, and scale.
