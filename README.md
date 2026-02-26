@@ -96,6 +96,7 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 - `airflow/`: DAG definitions
 - `infra/terraform/`: GCP infrastructure definitions
 - `docker/`: docker compose and service Dockerfiles
+- `scripts/`: runnable scripts for tools/modules
 - `dashboards/`: BI definitions and KPI documentation
 
 ## 6) Execution Roadmap
@@ -109,6 +110,12 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 7. Add Airflow setup and create DAGs for orchestration (batch jobs, dbt, retrain).
 8. Add model monitoring + periodic retraining workflow.
 9. Build Looker Studio dashboard for fraud metrics and pipeline health.
+
+## 6.1) Current Step Instructions
+
+For simulator usage, command examples, and options, see [simulator/README.md](simulator/README.md).
+Before first run, make script executable: `chmod +x scripts/run_simulator_docker.sh`.
+Run with Docker script: `./scripts/run_simulator_docker.sh --name fraud-simulator-dev`.
 
 ## 7) Minimal Success Criteria (MVP)
 
