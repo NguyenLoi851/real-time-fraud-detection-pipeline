@@ -125,22 +125,93 @@ deactivate
 
 ## 6) Execution Roadmap
 
-1. Download and profile dataset; document schema and feature plan.
-2. Set up only the simulator + Kafka locally with Docker, then publish CSV events to `transactions_raw`.
-3. Add Spark local setup with Docker and build streaming scoring + alert topic flow.
-4. Create Terraform skeleton and provision core GCP resources (GCS + BigQuery foundations).
-5. Land raw/scored data in GCS and load curated outputs to BigQuery.
-6. Add dbt setup and build fact/dimension models in BigQuery.
-7. Add Airflow setup and create DAGs for orchestration (batch jobs, dbt, retrain).
-8. Add model monitoring + periodic retraining workflow.
-9. Build Looker Studio dashboard for fraud metrics and pipeline health.
+1. **Data understanding**
+	- Download and profile dataset.
+	- Document schema, feature candidates, and leakage risks.
 
-## 6.1) Current Step Instructions
+2. **Local event flow (Simulator + Kafka)**
+	- Start simulator and Kafka with Docker.
+	- Publish transaction events to `transactions_raw`.
 
-For simulator usage, command examples, and options, see [simulator/csv/README.md](simulator/csv/README.md).
-Before first run, make script executable: `chmod +x scripts/simulator/run_simulator_docker.sh`.
-Run with Docker script: `./scripts/simulator/run_simulator_docker.sh`.
-For Kafka setup, producer/consumer commands, and topic/broker testing, see [simulator/kafka/README.md](simulator/kafka/README.md).
+3. **Streaming ML scoring (Spark + Kafka)**
+	- Spark continuously consumes from Kafka topic `transactions_raw`.
+	- Parse JSON payload into DataFrame.
+	- Enforce schema, fix data types, and handle missing values.
+	- Perform feature engineering (for example: `velocity_5min`, `balance_change_ratio`, `is_new_merchant`).
+	- Load a pre-trained ML model and run prediction per transaction.
+	- Add `fraud_score` and `predicted_is_fraud` (true/false).
+	- Apply business rules for escalation.
+	- Write scored output to data lake.
+	- Publish scored records to `scored-transactions` and high-risk records to `fraud-alerts`.
+	- Trigger email alerts when `fraud_score` is above threshold.
+
+4. **Cloud foundation (Terraform + GCP)**
+	- Provision base GCP resources (GCS + BigQuery foundations).
+
+5. **Lakehouse loading**
+	- Land raw/scored data in GCS and load curated outputs to BigQuery.
+
+6. **Warehouse modeling (dbt)**
+	- Build fact and dimension models in BigQuery.
+
+7. **Orchestration (Airflow)**
+	- Add DAGs for batch loads, dbt runs, and retraining workflows.
+
+8. **Monitoring and retraining**
+	- Add model monitoring and periodic retraining.
+
+9. **BI and reporting**
+	- Build Looker Studio dashboard for fraud metrics and pipeline health.
+
+## 6.1) Current Step (Now): Simulator + Kafka Local Setup
+
+Use this section to complete roadmap **Step 2**.
+
+1. Open simulator guide: [simulator/csv/README.md](simulator/csv/README.md)
+2. Make the run script executable (first time only):
+	```bash
+	chmod +x scripts/simulator/run_simulator_docker.sh
+	```
+3. Run simulator in Docker:
+	```bash
+	./scripts/simulator/run_simulator_docker.sh
+	```
+4. Open Kafka guide for topics, producer/consumer tests, and broker checks:
+	[simulator/kafka/README.md](simulator/kafka/README.md)
+
+## 6.2) Next Step: Local PySpark Streaming ML Scoring
+
+Use this section to complete roadmap **Step 3**.
+
+1. Confirm prerequisites:
+	- Kafka is running and receiving events on `transactions_raw`.
+	- Python environment is active and dependencies installed.
+	- Local Spark is installed and `spark-submit` is available.
+2. Train baseline model artifact:
+	```bash
+	spark-submit ml/train_fraud_model.py \
+	  --input data/transaction_log.csv \
+	  --model-output ml/artifacts/fraud_rf_pipeline
+	```
+3. Create output Kafka topics:
+	```bash
+	./scripts/kafka/kafka_topic_create.sh scored-transactions
+	./scripts/kafka/kafka_topic_create.sh fraud-alerts
+	```
+4. Run the streaming scoring job directly:
+	```bash
+	spark-submit \
+	  --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1 \
+	  streaming/pyspark_fraud_streaming.py \
+	  --bootstrap-servers localhost:9092 \
+	  --input-topic transactions_raw \
+	  --scored-topic scored-transactions \
+	  --alerts-topic fraud-alerts \
+	  --model-path ml/artifacts/fraud_rf_pipeline \
+	  --fraud-score-threshold 0.80
+	```
+
+For full Step 3 details, options, and email alert setup, see [streaming/README.md](streaming/README.md).
 
 ## 7) Minimal Success Criteria (MVP)
 
