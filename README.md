@@ -97,6 +97,7 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 - `infra/terraform/`: GCP infrastructure definitions
 - `docker/`: docker compose and service Dockerfiles
 - `scripts/`: runnable scripts for tools/modules
+	- `scripts/simulator/`: CSV simulator docker run scripts
 	- `scripts/kafka/`: Kafka start/stop/topic helper scripts
 - `dashboards/`: BI definitions and KPI documentation
 
@@ -136,10 +137,10 @@ deactivate
 
 ## 6.1) Current Step Instructions
 
-For simulator usage, command examples, and options, see [simulator/README.md](simulator/README.md).
-Before first run, make script executable: `chmod +x scripts/run_simulator_docker.sh`.
-Run with Docker script: `./scripts/run_simulator_docker.sh --name fraud-simulator-dev`.
-For Kafka setup, producer/consumer commands, and topic/broker testing, see `Kafka Integration (Docker + Python)` in [simulator/README.md](simulator/README.md).
+For simulator usage, command examples, and options, see [simulator/csv/README.md](simulator/csv/README.md).
+Before first run, make script executable: `chmod +x scripts/simulator/run_simulator_docker.sh`.
+Run with Docker script: `./scripts/simulator/run_simulator_docker.sh`.
+For Kafka setup, producer/consumer commands, and topic/broker testing, see [simulator/kafka/README.md](simulator/kafka/README.md).
 
 ## 7) Minimal Success Criteria (MVP)
 
