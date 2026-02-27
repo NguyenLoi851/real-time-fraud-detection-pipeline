@@ -97,7 +97,30 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 - `infra/terraform/`: GCP infrastructure definitions
 - `docker/`: docker compose and service Dockerfiles
 - `scripts/`: runnable scripts for tools/modules
+	- `scripts/kafka/`: Kafka start/stop/topic helper scripts
 - `dashboards/`: BI definitions and KPI documentation
+
+## 5.1) Python Virtual Environment (venv)
+
+Create and activate virtual environment (macOS/Linux):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+```
+
+Every time you open a new terminal, activate again:
+
+```bash
+source .venv/bin/activate
+```
+
+Deactivate when done:
+
+```bash
+deactivate
+```
 
 ## 6) Execution Roadmap
 
@@ -116,6 +139,7 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 For simulator usage, command examples, and options, see [simulator/README.md](simulator/README.md).
 Before first run, make script executable: `chmod +x scripts/run_simulator_docker.sh`.
 Run with Docker script: `./scripts/run_simulator_docker.sh --name fraud-simulator-dev`.
+For Kafka setup, producer/consumer commands, and topic/broker testing, see `Kafka Integration (Docker + Python)` in [simulator/README.md](simulator/README.md).
 
 ## 7) Minimal Success Criteria (MVP)
 

@@ -103,3 +103,122 @@ python3 simulator/realtime_csv_simulator.py \
 ## Current Handoff
 
 The simulator output file (`data/realtime_transactions.csv`) is the handoff point before sending events to Kafka in the next phase.
+
+## Kafka Integration (Docker + Python)
+
+This section matches the project architecture in the root README:
+
+- Topic for raw transactions: `transactions_raw`
+- Kafka runs in Docker
+- Python producer sends row-by-row events to Kafka
+
+### 0) Set up Python venv (recommended)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+```
+
+When opening a new terminal, run:
+
+```bash
+source .venv/bin/activate
+```
+
+If you prefer not to activate, use `.venv/bin/python` directly in commands.
+
+Note:
+- `realtime_csv_simulator.py` is optional for Kafka phase.
+- For Kafka streaming, use `kafka_csv_producer.py` directly.
+
+### 1) Install Python dependency
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+### 2) Start Kafka broker (Docker)
+
+```bash
+chmod +x scripts/kafka/kafka_up.sh scripts/kafka/kafka_down.sh scripts/kafka/kafka_topics.sh scripts/kafka/kafka_topic_create.sh
+./scripts/kafka/kafka_up.sh
+```
+
+What this does:
+
+- Starts Kafka from `docker/docker-compose.kafka.yml` in detached mode
+- Broker port is `localhost:9092`
+
+### 3) Verify broker is running
+
+```bash
+docker ps --filter name=fraud-kafka
+docker logs -f fraud-kafka
+```
+
+### 4) Create and verify topic
+
+Create topic:
+
+```bash
+./scripts/kafka/kafka_topic_create.sh transactions_raw
+```
+
+List topics:
+
+```bash
+./scripts/kafka/kafka_topics.sh --list
+```
+
+Describe topic:
+
+```bash
+./scripts/kafka/kafka_topics.sh --describe --topic transactions_raw
+```
+
+### 5) Run Python producer (CSV -> Kafka)
+
+```bash
+python3 simulator/kafka_csv_producer.py \
+	--input data/transaction_log.csv \
+	--bootstrap-servers localhost:9092 \
+	--topic transactions_raw \
+	--interval-min 0.3 \
+	--interval-max 1.0 \
+	--max-events 50 \
+	--log-row-details
+```
+
+What this producer code does:
+
+- Reads CSV row-by-row
+- Excludes `isFraud` and `isFlaggedFraud` by default
+- Adds `event_emitted_at_utc`
+- Sends JSON messages to Kafka topic
+- Prints topic/partition/offset for each message
+
+### 6) Run basic consumer to test messages
+
+Open another terminal and run:
+
+```bash
+python3 simulator/kafka_basic_consumer.py \
+	--bootstrap-servers localhost:9092 \
+	--topic transactions_raw \
+	--group-id fraud-debug-consumer \
+	--from-beginning \
+	--max-messages 50
+```
+
+What this consumer code does:
+
+- Subscribes to the topic
+- Reads messages and prints partition/offset/value
+- Helps verify broker/topic/data pipeline is working
+
+### 7) Stop Kafka
+
+```bash
+./scripts/kafka/kafka_down.sh
+```
