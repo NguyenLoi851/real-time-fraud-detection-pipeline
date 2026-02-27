@@ -36,6 +36,10 @@ docker ps --filter name=fraud-kafka
 docker logs -f fraud-kafka
 ```
 
+Compose file location:
+
+`simulator/kafka/docker-compose.kafka.yml`
+
 ## Topic Commands
 
 ```bash
