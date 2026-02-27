@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: fraud-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # Required KRaft cluster id (static for local dev)
+      - CLUSTER_ID=MkU3OEVBNTcwNTJENDM2Qk
+
+      # Unique broker/controller node id (single-node setup)
+      - KAFKA_NODE_ID=1
+
+      # Run Kafka in KRaft mode with one process acting as both broker and controller
+      - KAFKA_PROCESS_ROLES=broker,controller
+
+      # Name of listener used for controller quorum communication
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+
+      # Expose broker traffic on 9092 and controller traffic on 9093
+      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+
+      # Address advertised to clients running on host machine
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+
+      # Map each listener name to its protocol (plaintext for local dev)
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+
+      # Single controller voter definition: <node_id>@<host>:<controller_port>
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+
+      # Listener used for broker-to-broker communication
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+
+      # Internal topics replication settings for single-broker local environment
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+
+      # Allow automatic topic creation (convenient for local experimentation)
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
