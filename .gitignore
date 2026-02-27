@@ -199,6 +199,20 @@ cython_debug/
 #  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
 #  refer to https://docs.cursor.com/context/ignore-files
 
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.lock.hcl
+infra/terraform/keys/
+infra/terraform/terraform.tfvars
+*.auto.tfvars
+
 # Project data files
 data/transaction_log.csv
 data/realtime_transactions.csv
