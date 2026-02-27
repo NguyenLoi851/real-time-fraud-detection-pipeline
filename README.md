@@ -213,6 +213,35 @@ Use this section to complete roadmap **Step 3**.
 
 For full Step 3 details, options, and email alert setup, see [streaming/README.md](streaming/README.md).
 
+## 6.3) Next Step: Cloud Foundation (Terraform + GCP)
+
+Use this section to complete roadmap **Step 4**.
+
+1. Open Terraform guide:
+	[infra/terraform/README.md](infra/terraform/README.md)
+2. Create and download a GCP service account JSON key:
+	- Go to **IAM & Admin** → **Service Accounts** in your GCP project.
+	- Create a service account (for example `terraform-fraud-infra`).
+	- Grant roles: `Storage Admin`, `BigQuery Admin`.
+	- Open the service account **Keys** tab and create a new **JSON** key.
+	- Download the key into `infra/terraform/keys/`.
+3. Initialize and configure Terraform:
+	```bash
+	cd infra/terraform
+	mkdir -p keys
+	# place your downloaded key file in keys/, for example keys/terraform-sa-key.json
+	cp terraform.tfvars.example terraform.tfvars
+	# edit terraform.tfvars and set your project_id and service_account_key_file
+	terraform init
+	terraform plan
+	```
+4. Provision foundation resources:
+	```bash
+	terraform apply
+	```
+
+This creates three GCS buckets (Bronze/Silver/Gold) and one BigQuery dataset for analytics-ready tables.
+
 ## 7) Minimal Success Criteria (MVP)
 
 - Real-time transaction events flow from simulator → Kafka → Spark scoring.
