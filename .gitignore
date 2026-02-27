@@ -202,6 +202,9 @@ cython_debug/
 # Project data files
 data/transaction_log.csv
 data/realtime_transactions.csv
+data/checkpoints/
+data/lake/
+ml/artifacts/
 .DS_Store
 .cursorignore
 .cursorindexingignore
