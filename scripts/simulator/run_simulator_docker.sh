@@ -3,19 +3,10 @@ set -euo pipefail
 
 IMAGE_NAME="fraud-simulator"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONTAINER_NAME="fraud-simulator-run"
 
-if [[ "${1:-}" == "--name" ]]; then
-  if [[ -z "${2:-}" ]]; then
-    echo "Error: --name requires a value" >&2
-    exit 1
-  fi
-  CONTAINER_NAME="$2"
-  shift 2
-fi
-
-docker build -f "$PROJECT_ROOT/simulator/Dockerfile" -t "$IMAGE_NAME" "$PROJECT_ROOT"
+docker build -f "$PROJECT_ROOT/simulator/csv/Dockerfile" -t "$IMAGE_NAME" "$PROJECT_ROOT"
 
 if [[ "$#" -eq 0 ]]; then
   set -- \
