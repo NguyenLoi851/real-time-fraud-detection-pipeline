@@ -16,12 +16,6 @@ For every new terminal:
 source .venv/bin/activate
 ```
 
-Or use full path directly:
-
-```bash
-.venv/bin/python simulator/kafka/kafka_csv_producer.py --help
-```
-
 ## Start Kafka
 
 ```bash
