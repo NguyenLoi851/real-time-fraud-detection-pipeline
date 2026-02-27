@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from pyspark.sql import SparkSession
@@ -9,7 +10,7 @@ from pyspark.sql import functions as F
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Read and preview processed data from local data lake")
+    parser = argparse.ArgumentParser(description="Read and preview processed data from local or GCS data lake")
     parser.add_argument(
         "--path",
         default="data/lake/silver/scored_transactions",
@@ -30,14 +31,36 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    source_path = Path(args.path)
-    if not source_path.exists():
-        raise FileNotFoundError(f"Data lake path not found: {source_path}")
+    is_gcs_path = args.path.startswith("gs://")
+    source_path = args.path if is_gcs_path else str(Path(args.path))
 
-    spark = SparkSession.builder.appName("read-datalake-sample").master("local[*]").getOrCreate()
+    if is_gcs_path and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip():
+        raise ValueError(
+            "GCS path detected but GOOGLE_APPLICATION_CREDENTIALS is not set. "
+            "Set it to your service account key JSON file path."
+        )
+
+    if not is_gcs_path:
+        local_path = Path(source_path)
+        if not local_path.exists():
+            raise FileNotFoundError(f"Data lake path not found: {local_path}")
+
+    builder = SparkSession.builder.appName("read-datalake-sample").master("local[*]")
+    if is_gcs_path:
+        builder = (
+            builder.config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+            .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+            .config("spark.hadoop.google.cloud.auth.service.account.enable", "true")
+            .config(
+                "spark.hadoop.google.cloud.auth.service.account.json.keyfile",
+                os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""),
+            )
+        )
+
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
 
-    df = spark.read.format(args.format).load(str(source_path))
+    df = spark.read.format(args.format).load(source_path)
 
     if args.show_schema:
         df.printSchema()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import smtplib
 from email.message import EmailMessage
 from pathlib import Path
@@ -23,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--starting-offsets", default="latest", choices=["latest", "earliest"], help="Kafka offsets mode")
     parser.add_argument("--model-path", default="ml/artifacts/fraud_rf_pipeline", help="Path to Spark pre-trained PipelineModel")
     parser.add_argument("--checkpoint-dir", default="data/checkpoints/fraud_stream", help="Checkpoint directory")
+    parser.add_argument("--datalake-raw-path", default="data/lake/bronze/transactions_raw", help="Raw records data lake path")
     parser.add_argument("--datalake-scored-path", default="data/lake/silver/scored_transactions", help="Scored records data lake path")
     parser.add_argument("--datalake-alerts-path", default="data/lake/gold/fraud_alerts", help="Alert records data lake path")
     parser.add_argument("--fraud-score-threshold", type=float, default=0.8, help="Threshold for high fraud score")
@@ -109,31 +111,60 @@ def engineer_features(df: DataFrame) -> DataFrame:
     return featured_df
 
 
-def build_spark(app_name: str) -> SparkSession:
-    spark = (
-        SparkSession.builder.appName(app_name)
-        .master("local[*]")
-        .getOrCreate()
-    )
+def build_spark(app_name: str, gcs_enabled: bool, gcs_credentials_file: str | None) -> SparkSession:
+    builder = SparkSession.builder.appName(app_name).master("local[*]")
+
+    if gcs_enabled:
+        builder = (
+            builder.config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+            .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+        )
+        if gcs_credentials_file:
+            builder = (
+                builder.config("spark.hadoop.google.cloud.auth.service.account.enable", "true")
+                .config("spark.hadoop.google.cloud.auth.service.account.json.keyfile", gcs_credentials_file)
+            )
+
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     return spark
+
+
+def is_cloud_uri(path: str) -> bool:
+    return path.startswith("gs://")
 
 
 def main() -> None:
     args = parse_args()
 
-    model_path = Path(args.model_path)
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"Pre-trained model not found: {model_path}. Train first with: spark-submit ml/train_fraud_model.py"
+    uses_gcs = any(
+        is_cloud_uri(path)
+        for path in [args.model_path, args.checkpoint_dir, args.datalake_raw_path, args.datalake_scored_path, args.datalake_alerts_path]
+    )
+    gcs_credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+
+    if uses_gcs and not gcs_credentials_file:
+        raise ValueError(
+            "GCS paths detected but GOOGLE_APPLICATION_CREDENTIALS is not set. "
+            "Set it to your service account key JSON file path."
         )
 
-    Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
-    Path(args.datalake_scored_path).mkdir(parents=True, exist_ok=True)
-    Path(args.datalake_alerts_path).mkdir(parents=True, exist_ok=True)
+    if not is_cloud_uri(args.model_path):
+        if not Path(args.model_path).exists():
+            raise FileNotFoundError(
+                f"Pre-trained model not found: {args.model_path}. Train first with: spark-submit ml/train_fraud_model.py"
+            )
 
-    spark = build_spark("fraud-streaming-local-pyspark")
-    model = PipelineModel.load(str(model_path))
+    for target_path in [args.checkpoint_dir, args.datalake_raw_path, args.datalake_scored_path, args.datalake_alerts_path]:
+        if not is_cloud_uri(target_path):
+            Path(target_path).mkdir(parents=True, exist_ok=True)
+
+    spark = build_spark(
+        app_name="fraud-streaming-local-pyspark",
+        gcs_enabled=uses_gcs,
+        gcs_credentials_file=gcs_credentials_file or None,
+    )
+    model = PipelineModel.load(args.model_path)
 
     kafka_options = {
         "kafka.bootstrap.servers": args.bootstrap_servers,
@@ -163,6 +194,31 @@ def main() -> None:
     def process_batch(batch_df: DataFrame, batch_id: int) -> None:
         if batch_df.rdd.isEmpty():
             return
+
+        raw_df = batch_df.withColumn(
+            "event_ts",
+            F.coalesce(F.to_timestamp("event_emitted_at_utc"), F.current_timestamp()),
+        )
+
+        raw_write_cols = [
+            "source_topic",
+            "source_partition",
+            "source_offset",
+            "kafka_ingest_ts",
+            "event_emitted_at_utc",
+            "event_ts",
+            "step",
+            "type",
+            "amount",
+            "nameOrig",
+            "oldbalanceOrg",
+            "newbalanceOrig",
+            "nameDest",
+            "oldbalanceDest",
+            "newbalanceDest",
+        ]
+
+        raw_df.select(*raw_write_cols).write.mode("append").parquet(args.datalake_raw_path)
 
         featured_df = engineer_features(batch_df)
         scored_df = model.transform(featured_df)

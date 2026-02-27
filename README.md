@@ -242,6 +242,76 @@ Use this section to complete roadmap **Step 4**.
 
 This creates three GCS buckets (Bronze/Silver/Gold) and one BigQuery dataset for analytics-ready tables.
 
+## 6.4) Next Step: Lakehouse Loading on GCS (Roadmap Step 5)
+
+After Step 4 is complete, switch data lake writes from local `data/lake/...` to GCS paths.
+
+### 6.4.1) What is stored in each GCS bucket
+
+- **Bronze bucket (`gs://<bronze_bucket>`):** raw/landing data and streaming checkpoints.
+	- Suggested paths:
+		- `gs://<bronze_bucket>/raw/transactions_raw/`
+		- `gs://<bronze_bucket>/checkpoints/fraud_stream/`
+- **Silver bucket (`gs://<silver_bucket>`):** cleaned + scored transaction records from Spark streaming.
+	- Path:
+		- `gs://<silver_bucket>/scored_transactions/`
+- **Gold bucket (`gs://<gold_bucket>`):** curated alert-focused outputs used by downstream analytics.
+	- Path:
+		- `gs://<gold_bucket>/fraud_alerts/`
+
+### 6.4.2) Tool input/output positions (GCS + GCP)
+
+1. **Terraform (`infra/terraform/`)**
+	- Input: `terraform.tfvars` (`project_id`, `service_account_key_file`)
+	- Output: GCS bucket names + BigQuery dataset ID
+2. **Simulator (`simulator/csv/realtime_csv_simulator.py`)**
+	- Input: `data/realtime_transactions.csv`
+	- Output: Kafka topic `transactions_raw`
+3. **Kafka Producer/Topics (`simulator/kafka/*`, `scripts/kafka/*`)**
+	- Input: simulator JSON events
+	- Output: `transactions_raw`, `scored-transactions`, `fraud-alerts`
+4. **Spark Streaming (`streaming/pyspark_fraud_streaming.py`)**
+	- Input: Kafka `transactions_raw` + model `ml/artifacts/fraud_rf_pipeline`
+	- Output:
+	  - `gs://<bronze_bucket>/raw/transactions_raw/`
+	  - `gs://<silver_bucket>/scored_transactions/`
+	  - `gs://<gold_bucket>/fraud_alerts/`
+	  - `gs://<bronze_bucket>/checkpoints/fraud_stream/`
+	  - Kafka `scored-transactions` and `fraud-alerts`
+5. **Data preview tool (`streaming/read_datalake_sample.py`)**
+	- Input: parquet path in Silver/Gold GCS bucket
+	- Output: local console preview for validation
+6. **BigQuery (next phase of Step 5)**
+	- Input: curated files from GCS Silver/Gold
+	- Output: analytics-ready tables in dataset `<project_id>.fraud_analytics`
+
+### 6.4.3) Run streaming with GCS paths
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-key.json"
+
+spark-submit \
+	--packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1,com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
+	streaming/pyspark_fraud_streaming.py \
+	--bootstrap-servers localhost:9092 \
+	--input-topic transactions_raw \
+	--scored-topic scored-transactions \
+	--alerts-topic fraud-alerts \
+	--model-path ml/artifacts/fraud_rf_pipeline \
+	--checkpoint-dir gs://<bronze_bucket>/checkpoints/fraud_stream \
+	--datalake-raw-path gs://<bronze_bucket>/raw/transactions_raw \
+	--datalake-scored-path gs://<silver_bucket>/scored_transactions \
+	--datalake-alerts-path gs://<gold_bucket>/fraud_alerts \
+	--fraud-score-threshold 0.80
+```
+
+Use Terraform outputs to replace `<bronze_bucket>`, `<silver_bucket>`, `<gold_bucket>`.
+
+If you see `CANNOT_LOAD_CHECKPOINT_FILE_MANAGER` for a `gs://` checkpoint path, it usually means Spark cannot use GCS filesystem classes. Ensure:
+
+- `GOOGLE_APPLICATION_CREDENTIALS` is exported.
+- `gcs-connector` is included in `--packages`.
+
 ## 7) Minimal Success Criteria (MVP)
 
 - Real-time transaction events flow from simulator → Kafka → Spark scoring.
