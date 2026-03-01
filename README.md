@@ -407,6 +407,29 @@ Notes:
 - Model refresh trains only on labeled records that exist in scored transaction history, then overwrites `model-output`.
 - If Spark cannot read/write `gs://` paths, verify `GOOGLE_APPLICATION_CREDENTIALS` and `gcs-connector` package.
 
+### 6.5.3) Load hourly batch outputs from GCS to BigQuery
+
+Run this after hourly batch finishes writing to GCS:
+
+```bash
+python3 batch/load_hourly_batch_to_bigquery.py \
+	--project-id <your-gcp-project-id> \
+	--dataset fraud_analytics \
+	--gcs-output-base gs://<gold_bucket>/hourly_batch \
+	--write-disposition WRITE_TRUNCATE \
+	--create-dataset-if-missing
+```
+
+Optional: load only selected tables:
+
+```bash
+python3 batch/load_hourly_batch_to_bigquery.py \
+	--project-id <your-gcp-project-id> \
+	--dataset fraud_analytics \
+	--gcs-output-base gs://<gold_bucket>/hourly_batch \
+	--tables curated_scored monitoring_hourly
+```
+
 Outputs:
 
 - `data/lake/gold/hourly_batch/curated_scored` (or `gs://<gold_bucket>/hourly_batch/curated_scored`)
@@ -438,6 +461,17 @@ Outputs:
 	- What is the difference between Fact, Dimension, and Mart tables?
 	- In this pipeline, which steps are Extract / Load / Transform?
 	- What are the trade-offs between sending notifications directly from Spark vs publishing alerts to Kafka and handling notifications via consumers?
+	- Should we load data from GCS parquet to BigQuery with Python, or write directly from Spark to BigQuery?
+
+		- Python BigQuery load job (recommended for this project):
+			- Keep Spark focused on transformations and reliable GCS lake writes.
+			- Use BigQuery native load jobs for lower cost and easier retry/operations.
+			- Works well with orchestration and dbt dependencies.
+		- Spark direct write to BigQuery:
+			- Useful when all logic must stay in one Spark job.
+			- Adds connector/runtime complexity and can be harder to operate at scale.
+
+		Recommended pattern here: Spark writes curated parquet to GCS, then Python load jobs ingest to BigQuery, then dbt builds warehouse models.
 - [ ] Add one end-to-end runbook to execute the project from start to finish (local and optional GCP path).
 - [ ] Add images/diagrams for end-to-end flow and major pipeline steps.
 - [ ] Add a document listing all related tools/services used in the project and where each is used.
