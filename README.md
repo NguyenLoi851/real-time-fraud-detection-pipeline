@@ -22,14 +22,14 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 
 3. **Messaging Layer (Kafka)**
 	- `transactions_raw`: raw events from simulator.
-	- `transactions_scored`: scored events with fraud probability/prediction.
-	- `fraud_alerts`: only suspicious/high-risk transactions.
+	- `fraud_alerts`: only suspicious/high-risk transactions for downstream applications.
 
 4. **Streaming Processing (Spark Structured Streaming)**
 	- Consume from `transactions_raw`.
 	- Apply feature transformations for online scoring.
 	- Use built-in Spark ML model to predict fraud risk.
-	- Publish scored records and alerts to Kafka topics.
+	- Persist scored transactions to data lake Silver (`scored_transactions`).
+	- Publish only alert events to Kafka topic `fraud_alerts`.
 
 5. **Storage Layer (Google Cloud Storage)**
 	- Persist raw and scored events in GCS as data lake zones:
@@ -37,19 +37,25 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 	  - Silver: cleaned/scored events
 	  - Gold: curated analytics-ready data
 
-6. **Warehouse + Transformation (BigQuery + dbt)**
+6. **Batch Processing (Spark Hourly)**
+	- Read scored transactions from Silver zone every hour.
+	- Apply required transformations and build retraining-ready datasets.
+	- Feed model upgrade/retraining workflows.
+
+7. **Warehouse + Transformation (BigQuery + dbt)**
 	- Load curated data to BigQuery.
 	- Use dbt to build:
 	  - Fact table(s): transaction facts
 	  - Dimension tables: customer/account/type/time dimensions
 
-7. **Orchestration (Airflow)**
+8. **Orchestration (Airflow)**
 	- Schedule ingestion, batch loads, dbt runs, model retraining, and quality checks.
 
-8. **Visualization (Looker Studio / Data Studio)**
+9. **Visualization (Looker Studio / Data Studio)**
 	- Fraud trend dashboards, alert rate, model performance, and operational KPIs.
+	- Can consume/visualize from `fraud_alerts` stream and warehouse outputs.
 
-9. **Platform & Infra**
+10. **Platform & Infra**
 	- Docker for local reproducible services.
 	- Terraform for provisioning GCP resources.
 
@@ -73,9 +79,10 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 ### Phase C — Real-Time Inference
 - Simulate events from CSV row-by-row.
 - Stream through Kafka + Spark.
-- Write predictions and alerts.
+- Write scored transactions to Silver data lake and alerts to Kafka `fraud_alerts`.
 
 ### Phase D — Batch Truth Reconciliation
+- Read scored transactions from Silver zone every hour.
 - Join scored events with true labels (`isFraud`) from original dataset/history.
 - Measure model quality (precision, recall, F1, AUC).
 - Build retraining dataset.
@@ -141,8 +148,8 @@ deactivate
 	- Load a pre-trained ML model and run prediction per transaction.
 	- Add `fraud_score` and `predicted_is_fraud` (true/false).
 	- Apply business rules for escalation.
-	- Write scored output to data lake.
-	- Publish scored records to `scored-transactions` and high-risk records to `fraud-alerts`.
+	- Write scored output to Silver data lake (`scored_transactions`).
+	- Publish only high-risk records to `fraud_alerts`.
 	- Trigger email alerts when `fraud_score` is above threshold.
 
 4. **Cloud foundation (Terraform + GCP)**
@@ -151,16 +158,21 @@ deactivate
 5. **Lakehouse loading**
 	- Land raw/scored data in GCS and load curated outputs to BigQuery.
 
-6. **Warehouse modeling (dbt)**
+6. **Hourly batch processing + model upgrade**
+	- Spark batch job reads Silver `scored_transactions` every hour.
+	- Apply required transformations and generate retraining/feature outputs.
+	- Upgrade ML model on schedule based on latest data.
+
+7. **Warehouse modeling (dbt)**
 	- Build fact and dimension models in BigQuery.
 
-7. **Orchestration (Airflow)**
+8. **Orchestration (Airflow)**
 	- Add DAGs for batch loads, dbt runs, and retraining workflows.
 
-8. **Monitoring and retraining**
+9. **Monitoring and retraining**
 	- Add model monitoring and periodic retraining.
 
-9. **BI and reporting**
+10. **BI and reporting**
 	- Build Looker Studio dashboard for fraud metrics and pipeline health.
 
 ## 6.1) Current Step (Now): Simulator + Kafka Local Setup
@@ -195,8 +207,7 @@ Use this section to complete roadmap **Step 3**.
 	```
 3. Create output Kafka topics:
 	```bash
-	./scripts/kafka/kafka_topic_create.sh scored-transactions
-	./scripts/kafka/kafka_topic_create.sh fraud-alerts
+	./scripts/kafka/kafka_topic_create.sh fraud_alerts
 	```
 4. Run the streaming scoring job directly:
 	```bash
@@ -205,8 +216,7 @@ Use this section to complete roadmap **Step 3**.
 	  streaming/pyspark_fraud_streaming.py \
 	  --bootstrap-servers localhost:9092 \
 	  --input-topic transactions_raw \
-	  --scored-topic scored-transactions \
-	  --alerts-topic fraud-alerts \
+	  --alerts-topic fraud_alerts \
 	  --model-path ml/artifacts/fraud_rf_pipeline \
 	  --fraud-score-threshold 0.80
 	```
@@ -269,7 +279,7 @@ After Step 4 is complete, switch data lake writes from local `data/lake/...` to 
 	- Output: Kafka topic `transactions_raw`
 3. **Kafka Producer/Topics (`simulator/kafka/*`, `scripts/kafka/*`)**
 	- Input: simulator JSON events
-	- Output: `transactions_raw`, `scored-transactions`, `fraud-alerts`
+	- Output: `transactions_raw`, `fraud_alerts`
 4. **Spark Streaming (`streaming/pyspark_fraud_streaming.py`)**
 	- Input: Kafka `transactions_raw` + model `ml/artifacts/fraud_rf_pipeline`
 	- Output:
@@ -277,11 +287,17 @@ After Step 4 is complete, switch data lake writes from local `data/lake/...` to 
 	  - `gs://<silver_bucket>/scored_transactions/`
 	  - `gs://<gold_bucket>/fraud_alerts/`
 	  - `gs://<bronze_bucket>/checkpoints/fraud_stream/`
-	  - Kafka `scored-transactions` and `fraud-alerts`
-5. **Data preview tool (`streaming/read_datalake_sample.py`)**
+	  - Kafka `fraud_alerts`
+5. **Alert Consumers (applications)**
+	- Input: Kafka `fraud_alerts`
+	- Output: real-time notifications/operational views (Email, Slack, visualization apps)
+6. **Data preview tool (`streaming/read_datalake_sample.py`)**
 	- Input: parquet path in Silver/Gold GCS bucket
 	- Output: local console preview for validation
-6. **BigQuery (next phase of Step 5)**
+7. **Spark Batch (hourly)**
+	- Input: `gs://<silver_bucket>/scored_transactions/`
+	- Output: transformed/retraining-ready data for ML upgrade
+8. **BigQuery (next phase of Step 5)**
 	- Input: curated files from GCS Silver/Gold
 	- Output: analytics-ready tables in dataset `<project_id>.fraud_analytics`
 
@@ -295,8 +311,7 @@ spark-submit \
 	streaming/pyspark_fraud_streaming.py \
 	--bootstrap-servers localhost:9092 \
 	--input-topic transactions_raw \
-	--scored-topic scored-transactions \
-	--alerts-topic fraud-alerts \
+	--alerts-topic fraud_alerts \
 	--model-path ml/artifacts/fraud_rf_pipeline \
 	--checkpoint-dir gs://<bronze_bucket>/checkpoints/fraud_stream \
 	--datalake-raw-path gs://<bronze_bucket>/raw/transactions_raw \
@@ -315,8 +330,9 @@ If you see `CANNOT_LOAD_CHECKPOINT_FILE_MANAGER` for a `gs://` checkpoint path, 
 ## 7) Minimal Success Criteria (MVP)
 
 - Real-time transaction events flow from simulator → Kafka → Spark scoring.
-- Alerts generated for suspicious transactions.
+- Alerts generated for suspicious transactions and published to `fraud_alerts`.
 - Raw/scored data stored in GCS.
+- Hourly Spark batch reads `scored_transactions` and prepares model upgrade/retraining inputs.
 - Curated fact/dimension tables built in BigQuery via dbt.
 - Airflow automates scheduled batch/retraining pipeline.
 - Dashboard shows fraud trends and model performance.

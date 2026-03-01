@@ -14,9 +14,8 @@ This module implements roadmap Step 3 and Step 5 with PySpark.
   - `predicted_is_fraud` (true/false)
 - Applies business rules and computes `is_alert`.
 - Writes raw transactions (Bronze), scored data (Silver), and alerts (Gold) to local paths or GCS paths (`gs://...`).
-- Publishes scored transactions and alert transactions to Kafka topics:
-  - `scored-transactions`
-  - `fraud-alerts`
+- Publishes only alert transactions to Kafka topic:
+  - `fraud_alerts`
 - Optionally sends email alert summary when `fraud_score` exceeds threshold.
 
 ## Prerequisites
@@ -46,11 +45,10 @@ spark-submit ml/train_fraud_model.py \
   --model-output ml/artifacts/fraud_rf_pipeline
 ```
 
-## 2) Create Kafka output topics
+## 2) Create Kafka output topic
 
 ```bash
-./scripts/kafka/kafka_topic_create.sh scored-transactions
-./scripts/kafka/kafka_topic_create.sh fraud-alerts
+./scripts/kafka/kafka_topic_create.sh fraud_alerts
 ```
 
 ## 3) Run streaming scoring job (local lake)
@@ -63,8 +61,7 @@ spark-submit \
   streaming/pyspark_fraud_streaming.py \
   --bootstrap-servers localhost:9092 \
   --input-topic transactions_raw \
-  --scored-topic scored-transactions \
-  --alerts-topic fraud-alerts \
+  --alerts-topic fraud_alerts \
   --model-path ml/artifacts/fraud_rf_pipeline \
   --fraud-score-threshold 0.80
 ```
@@ -131,8 +128,7 @@ spark-submit \
   streaming/pyspark_fraud_streaming.py \
   --bootstrap-servers localhost:9092 \
   --input-topic transactions_raw \
-  --scored-topic scored-transactions \
-  --alerts-topic fraud-alerts \
+  --alerts-topic fraud_alerts \
   --model-path ml/artifacts/fraud_rf_pipeline \
   --checkpoint-dir gs://<bronze_bucket>/checkpoints/fraud_stream \
   --datalake-raw-path gs://<bronze_bucket>/raw/transactions_raw \
