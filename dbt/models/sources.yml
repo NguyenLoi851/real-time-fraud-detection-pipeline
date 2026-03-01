@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: fraud_raw
+    description: "Step 6 batch outputs loaded into BigQuery"
+    database: "{{ env_var('DBT_BIGQUERY_PROJECT', target.project) }}"
+    schema: "{{ var('raw_dataset', target.schema) }}"
+    tables:
+      - name: curated_scored
+        description: "Reconciled scored transactions with labels and alert flags"
+      - name: retraining_dataset
+        description: "Labeled retraining dataset produced by hourly batch"
+      - name: monitoring_hourly
+        description: "Hourly monitoring aggregates from batch"

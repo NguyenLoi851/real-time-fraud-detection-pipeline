@@ -1,0 +1,72 @@
+version: 2
+
+models:
+  - name: dim_transaction_type
+    description: "Transaction type dimension"
+    columns:
+      - name: transaction_type_key
+        tests:
+          - not_null
+          - unique
+      - name: transaction_type
+        tests:
+          - not_null
+
+  - name: dim_account
+    description: "Account dimension derived from both origin and destination accounts"
+    columns:
+      - name: account_key
+        tests:
+          - not_null
+          - unique
+      - name: account_id
+        tests:
+          - not_null
+
+  - name: dim_time_hour
+    description: "Hourly time dimension in UTC"
+    columns:
+      - name: time_hour_utc
+        tests:
+          - not_null
+          - unique
+
+  - name: fct_scored_transactions
+    description: "Fact table for all scored transactions"
+    columns:
+      - name: transaction_key
+        tests:
+          - not_null
+          - unique
+      - name: transaction_type_key
+        tests:
+          - relationships:
+              to: ref('dim_transaction_type')
+              field: transaction_type_key
+      - name: origin_account_key
+        tests:
+          - relationships:
+              to: ref('dim_account')
+              field: account_key
+      - name: destination_account_key
+        tests:
+          - relationships:
+              to: ref('dim_account')
+              field: account_key
+
+  - name: fct_fraud_alerts
+    description: "Alert-only fact table"
+    columns:
+      - name: transaction_key
+        tests:
+          - not_null
+
+  - name: mart_fraud_hourly_kpis
+    description: "Hourly KPI mart for fraud monitoring and BI"
+    columns:
+      - name: event_hour_utc
+        tests:
+          - not_null
+      - name: transaction_type
+        tests:
+          - not_null

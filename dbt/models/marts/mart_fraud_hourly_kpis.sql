@@ -1,0 +1,37 @@
+with scored as (
+  select
+    event_hour_utc,
+    transaction_type,
+    count(*) as transaction_count,
+    sum(case when is_alert then 1 else 0 end) as alert_count,
+    avg(fraud_score) as avg_fraud_score,
+    max(fraud_score) as max_fraud_score,
+    avg(case when is_label_available then is_fraud_label end) as observed_fraud_rate
+  from {{ ref('fct_scored_transactions') }}
+  group by 1, 2
+),
+
+monitoring as (
+  select
+    event_hour_utc,
+    transaction_type,
+    p95_fraud_score,
+    alert_rate
+  from {{ ref('stg_monitoring_hourly') }}
+)
+
+select
+  s.event_hour_utc,
+  s.transaction_type,
+  s.transaction_count,
+  s.alert_count,
+  safe_divide(s.alert_count, nullif(s.transaction_count, 0)) as alert_rate_recomputed,
+  m.alert_rate as alert_rate_batch,
+  s.avg_fraud_score,
+  m.p95_fraud_score,
+  s.max_fraud_score,
+  s.observed_fraud_rate
+from scored s
+left join monitoring m
+  on s.event_hour_utc = m.event_hour_utc
+ and s.transaction_type = m.transaction_type

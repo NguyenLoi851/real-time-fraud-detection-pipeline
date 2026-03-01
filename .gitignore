@@ -218,6 +218,13 @@ data/transaction_log.csv
 data/realtime_transactions.csv
 data/checkpoints/
 data/lake/
+
+# dbt artifacts
+dbt/target/
+dbt/dbt_packages/
+dbt/profiles.yml
+dbt/.user.yml
+logs/
 ml/artifacts/
 .DS_Store
 .cursorignore
