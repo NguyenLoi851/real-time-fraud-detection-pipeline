@@ -179,12 +179,9 @@ deactivate
 	- Build fact and dimension models in BigQuery.
 
 8. **Orchestration (Airflow)**
-	- Add DAGs for batch loads, dbt runs, and retraining workflows.
+	- Add DAGs for batch loads, dbt runs, monitoring, and periodic retraining workflows.
 
-9. **Monitoring and retraining**
-	- Add model monitoring and periodic retraining.
-
-10. **BI and reporting**
+9. **BI and reporting**
 	- Build Looker Studio dashboard for fraud metrics and pipeline health.
 
 ## 6.1) Current Step (Now): Simulator + Kafka Local Setup
