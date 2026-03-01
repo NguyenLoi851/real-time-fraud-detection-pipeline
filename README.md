@@ -110,13 +110,23 @@ Build a hybrid streaming + batch data platform to detect fraudulent transactions
 
 ## 5.1) Python Virtual Environment (venv)
 
+Use Python 3.11 for this project (especially for dbt compatibility).
+
 Create and activate virtual environment (macOS/Linux):
 
 ```bash
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
+
+Quick check after activation:
+
+```bash
+python --version
+```
+
+Expected: `Python 3.11.x`
 
 Every time you open a new terminal, activate again:
 
@@ -435,6 +445,36 @@ Outputs:
 - `data/lake/gold/hourly_batch/curated_scored` (or `gs://<gold_bucket>/hourly_batch/curated_scored`)
 - `data/lake/gold/hourly_batch/retraining_dataset` (or `gs://<gold_bucket>/hourly_batch/retraining_dataset`)
 - `data/lake/gold/hourly_batch/monitoring_hourly` (or `gs://<gold_bucket>/hourly_batch/monitoring_hourly`)
+
+## 6.6) Next Step: Warehouse Modeling with dbt (Roadmap Step 7)
+
+Feature 7 is implemented in `dbt/` and builds BigQuery warehouse models:
+
+- Dimensions: `dim_transaction_type`, `dim_account`, `dim_time_hour`
+- Facts: `fct_scored_transactions`, `fct_fraud_alerts`
+- Mart: `mart_fraud_hourly_kpis`
+
+1. Open warehouse guide:
+	[dbt/README.md](dbt/README.md)
+2. Install dbt adapter:
+	```bash
+	python3 -m pip install -r dbt/requirements.txt
+	```
+3. Configure profile:
+	```bash
+	cp dbt/profiles.yml.example dbt/profiles.yml
+	export DBT_PROFILES_DIR="$PWD/dbt"
+	export DBT_BIGQUERY_PROJECT="<your-gcp-project-id>"
+	export DBT_BIGQUERY_DATASET="fraud_analytics"
+	export GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-key.json"
+	```
+4. Run dbt models + tests:
+	```bash
+	cd dbt
+	dbt debug
+	dbt run
+	dbt test
+	```
 
 ## 7) Minimal Success Criteria (MVP)
 
