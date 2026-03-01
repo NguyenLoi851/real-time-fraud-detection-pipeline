@@ -330,11 +330,11 @@ If you see `CANNOT_LOAD_CHECKPOINT_FILE_MANAGER` for a `gs://` checkpoint path, 
 - `GOOGLE_APPLICATION_CREDENTIALS` is exported.
 - `gcs-connector` is included in `--packages`.
 
-## 6.5) Step 6 Transformation Guide (Hourly Spark Batch)
+## 6.5) Hourly Transformation Guide (Spark Batch)
 
-Step 6 is different from Step 3: Step 3 transforms events for low-latency scoring, while Step 6 transforms historical scored data for retraining, analytics, and warehouse loading.
+Hourly batch processing is different from streaming scoring: streaming transforms events for low-latency inference, while hourly batch transforms historical scored data for retraining, analytics, and warehouse loading.
 
-Recommended Step 6 transformations:
+Recommended hourly transformations:
 
 1. **Label reconciliation**
 	- Join Silver scored records with ground-truth labels (`isFraud`) from historical/source data.
@@ -361,6 +361,57 @@ Recommended Step 6 transformations:
 6. **Warehouse-ready outputs**
 	- Write curated batch outputs for BigQuery loading.
 	- Suggested outputs: scored facts, alerts facts, and optional risk profile dimensions.
+
+### 6.5.1) Run hourly batch locally (one-shot)
+
+Run the hourly batch job once against current Silver data and historical labels:
+
+```bash
+spark-submit batch/hourly_batch_processing.py \
+	--silver-path data/lake/silver/scored_transactions \
+	--labels-csv data/transaction_log.csv \
+	--output-base data/lake/gold/hourly_batch \
+	--model-output ml/artifacts/fraud_rf_pipeline
+```
+
+Optional: process only one UTC hour (`YYYY-MM-DD-HH`):
+
+```bash
+spark-submit batch/hourly_batch_processing.py \
+	--silver-path data/lake/silver/scored_transactions \
+	--labels-csv data/transaction_log.csv \
+	--output-base data/lake/gold/hourly_batch \
+	--model-output ml/artifacts/fraud_rf_pipeline \
+	--target-hour-utc 2026-02-27-03
+```
+
+### 6.5.2) Run hourly batch on GCS
+
+Use this when `silver-path`, `output-base`, and `model-output` are in GCS:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-key.json"
+
+spark-submit \
+	--packages com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
+	batch/hourly_batch_processing.py \
+	--silver-path gs://<silver_bucket>/scored_transactions \
+	--labels-csv data/transaction_log.csv \
+	--output-base gs://<gold_bucket>/hourly_batch \
+	--model-output gs://<gold_bucket>/models/fraud_rf_pipeline
+```
+
+Notes:
+
+- `labels-csv` can also be a GCS path (for example `gs://<bronze_bucket>/reference/transaction_log.csv`).
+- Model refresh trains only on labeled records that exist in scored transaction history, then overwrites `model-output`.
+- If Spark cannot read/write `gs://` paths, verify `GOOGLE_APPLICATION_CREDENTIALS` and `gcs-connector` package.
+
+Outputs:
+
+- `data/lake/gold/hourly_batch/curated_scored` (or `gs://<gold_bucket>/hourly_batch/curated_scored`)
+- `data/lake/gold/hourly_batch/retraining_dataset` (or `gs://<gold_bucket>/hourly_batch/retraining_dataset`)
+- `data/lake/gold/hourly_batch/monitoring_hourly` (or `gs://<gold_bucket>/hourly_batch/monitoring_hourly`)
 
 ## 7) Minimal Success Criteria (MVP)
 
