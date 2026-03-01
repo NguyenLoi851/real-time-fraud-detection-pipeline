@@ -343,3 +343,14 @@ If you see `CANNOT_LOAD_CHECKPOINT_FILE_MANAGER` for a `gs://` checkpoint path, 
 - Data drift between historical and simulated/streaming data.
 - Late-arriving labels and mismatch during reconciliation.
 - Cost/performance tuning for Spark, BigQuery, and storage.
+
+## 9) Future Plan (Backlog)
+
+- [ ] Refactor and simplify root `README.md` to improve clarity and reduce long sections.
+- [ ] Remove duplicated instructions across `README.md`, `streaming/README.md`, and simulator docs.
+- [ ] Add a project FAQ/Q&A section, for example:
+	- What is the difference between Fact, Dimension, and Mart tables?
+	- In this pipeline, which steps are Extract / Load / Transform?
+- [ ] Add one end-to-end runbook to execute the project from start to finish (local and optional GCP path).
+- [ ] Add images/diagrams for end-to-end flow and major pipeline steps.
+- [ ] Add a document listing all related tools/services used in the project and where each is used.
