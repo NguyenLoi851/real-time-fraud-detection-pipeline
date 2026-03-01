@@ -156,12 +156,14 @@ deactivate
 	- Provision base GCP resources (GCS + BigQuery foundations).
 
 5. **Lakehouse loading**
-	- Land raw/scored data in GCS and load curated outputs to BigQuery.
+	- Land raw/scored data in GCS (Bronze/Silver/Gold).
+	- Keep this step focused on reliable storage and partitioned data layout.
 
 6. **Hourly batch processing + model upgrade**
 	- Spark batch job reads Silver `scored_transactions` every hour.
 	- Apply required transformations and generate retraining/feature outputs.
 	- Upgrade ML model on schedule based on latest data.
+	- Load curated/transformed outputs to BigQuery.
 
 7. **Warehouse modeling (dbt)**
 	- Build fact and dimension models in BigQuery.
@@ -297,7 +299,7 @@ After Step 4 is complete, switch data lake writes from local `data/lake/...` to 
 7. **Spark Batch (hourly)**
 	- Input: `gs://<silver_bucket>/scored_transactions/`
 	- Output: transformed/retraining-ready data for ML upgrade
-8. **BigQuery (next phase of Step 5)**
+8. **BigQuery (Step 6 output)**
 	- Input: curated files from GCS Silver/Gold
 	- Output: analytics-ready tables in dataset `<project_id>.fraud_analytics`
 
@@ -326,6 +328,38 @@ If you see `CANNOT_LOAD_CHECKPOINT_FILE_MANAGER` for a `gs://` checkpoint path, 
 
 - `GOOGLE_APPLICATION_CREDENTIALS` is exported.
 - `gcs-connector` is included in `--packages`.
+
+## 6.5) Step 6 Transformation Guide (Hourly Spark Batch)
+
+Step 6 is different from Step 3: Step 3 transforms events for low-latency scoring, while Step 6 transforms historical scored data for retraining, analytics, and warehouse loading.
+
+Recommended Step 6 transformations:
+
+1. **Label reconciliation**
+	- Join Silver scored records with ground-truth labels (`isFraud`) from historical/source data.
+	- Add fields like `is_label_available` and `label_delay_hours`.
+
+2. **Training dataset preparation**
+	- Keep rows with valid labels for supervised training.
+	- Handle class imbalance (for example downsampling/weighting).
+	- Apply time-based split for train/validation/test.
+
+3. **Historical feature generation**
+	- Build rolling features (1h/24h/7d): counts, sums, averages, max amounts.
+	- Build ratio and behavior features (for example `amount_vs_24h_avg`).
+
+4. **Data quality and normalization**
+	- Deduplicate records using transaction/business keys.
+	- Enforce schema and null/invalid value rules.
+	- Normalize categorical values and ensure stable types.
+
+5. **Monitoring transforms**
+	- Produce model monitoring aggregates by hour/day (alert rate, score distribution).
+	- Track drift/performance by segment (transaction type, amount bucket).
+
+6. **Warehouse-ready outputs**
+	- Write curated batch outputs for BigQuery loading.
+	- Suggested outputs: scored facts, alerts facts, and optional risk profile dimensions.
 
 ## 7) Minimal Success Criteria (MVP)
 
