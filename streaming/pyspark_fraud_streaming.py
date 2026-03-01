@@ -19,8 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local PySpark Kafka fraud scoring stream")
     parser.add_argument("--bootstrap-servers", default="localhost:9092", help="Kafka bootstrap servers")
     parser.add_argument("--input-topic", default="transactions_raw", help="Kafka input topic")
-    parser.add_argument("--scored-topic", default="scored-transactions", help="Kafka topic for scored transactions")
-    parser.add_argument("--alerts-topic", default="fraud-alerts", help="Kafka topic for fraud alerts")
+    parser.add_argument("--alerts-topic", default="fraud_alerts", help="Kafka topic for fraud alerts")
     parser.add_argument("--starting-offsets", default="latest", choices=["latest", "earliest"], help="Kafka offsets mode")
     parser.add_argument("--model-path", default="ml/artifacts/fraud_rf_pipeline", help="Path to Spark pre-trained PipelineModel")
     parser.add_argument("--checkpoint-dir", default="data/checkpoints/fraud_stream", help="Checkpoint directory")
@@ -275,12 +274,6 @@ def main() -> None:
 
         alerts_df = final_df.filter(F.col("is_alert"))
         alerts_df.select(*write_cols).write.mode("append").parquet(args.datalake_alerts_path)
-
-        scored_kafka_df = final_df.select(
-            F.col("nameOrig").cast("string").alias("key"),
-            F.to_json(F.struct(*[F.col(c) for c in write_cols])).alias("value"),
-        )
-        scored_kafka_df.write.format("kafka").options(**kafka_options).option("topic", args.scored_topic).save()
 
         alerts_kafka_df = alerts_df.select(
             F.col("nameOrig").cast("string").alias("key"),
