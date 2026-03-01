@@ -150,7 +150,7 @@ deactivate
 	- Apply business rules for escalation.
 	- Write scored output to Silver data lake (`scored_transactions`).
 	- Publish only high-risk records to `fraud_alerts`.
-	- Trigger email alerts when `fraud_score` is above threshold.
+	- Let downstream consumer services read `fraud_alerts` and send notifications (Email, Slack) or power visualization apps.
 
 4. **Cloud foundation (Terraform + GCP)**
 	- Provision base GCP resources (GCS + BigQuery foundations).
@@ -223,7 +223,8 @@ Use this section to complete roadmap **Step 3**.
 	  --fraud-score-threshold 0.80
 	```
 
-For full Step 3 details, options, and email alert setup, see [streaming/README.md](streaming/README.md).
+For full Step 3 details and runtime options, see [streaming/README.md](streaming/README.md).
+For alert email consumer setup, see [consumers/README.md](consumers/README.md).
 
 ## 6.3) Next Step: Cloud Foundation (Terraform + GCP)
 
@@ -385,6 +386,7 @@ Recommended Step 6 transformations:
 - [ ] Add a project FAQ/Q&A section, for example:
 	- What is the difference between Fact, Dimension, and Mart tables?
 	- In this pipeline, which steps are Extract / Load / Transform?
+	- What are the trade-offs between sending notifications directly from Spark vs publishing alerts to Kafka and handling notifications via consumers?
 - [ ] Add one end-to-end runbook to execute the project from start to finish (local and optional GCP path).
 - [ ] Add images/diagrams for end-to-end flow and major pipeline steps.
 - [ ] Add a document listing all related tools/services used in the project and where each is used.

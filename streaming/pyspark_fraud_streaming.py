@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import smtplib
-from email.message import EmailMessage
 from pathlib import Path
 
 from pyspark.ml import PipelineModel
@@ -30,14 +28,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--high-amount-threshold", type=float, default=200000.0, help="Amount threshold for transfer/cash-out alert rule")
     parser.add_argument("--velocity-threshold", type=int, default=5, help="Minimum velocity_5min to trigger alert rule")
     parser.add_argument("--trigger-seconds", type=int, default=10, help="Micro-batch trigger interval")
-    parser.add_argument("--enable-email-alerts", action="store_true", help="Enable email alert notifications")
-    parser.add_argument("--smtp-host", default="", help="SMTP host")
-    parser.add_argument("--smtp-port", type=int, default=587, help="SMTP port")
-    parser.add_argument("--smtp-user", default="", help="SMTP username")
-    parser.add_argument("--smtp-password", default="", help="SMTP password")
-    parser.add_argument("--email-from", default="", help="Sender email")
-    parser.add_argument("--email-to", default="", help="Receiver email")
-    parser.add_argument("--email-use-tls", action="store_true", help="Use STARTTLS for SMTP")
     return parser.parse_args()
 
 
@@ -56,31 +46,6 @@ def build_schema() -> StructType:
             StructField("event_emitted_at_utc", StringType(), True),
         ]
     )
-
-
-def send_email_alert(args: argparse.Namespace, batch_id: int, alert_count: int, max_score: float) -> None:
-    if not args.enable_email_alerts:
-        return
-    required = [args.smtp_host, args.smtp_user, args.smtp_password, args.email_from, args.email_to]
-    if any(not value for value in required):
-        print("Email alerts enabled but SMTP/email settings are incomplete. Skipping email send.", flush=True)
-        return
-
-    message = EmailMessage()
-    message["Subject"] = f"[Fraud Alert] High-risk transactions detected (batch {batch_id})"
-    message["From"] = args.email_from
-    message["To"] = args.email_to
-    message.set_content(
-        f"Detected {alert_count} high-risk transactions in micro-batch {batch_id}.\n"
-        f"Maximum fraud_score observed: {max_score:.4f}\n"
-        f"Please check Kafka topic '{args.alerts_topic}' and data lake alerts path for details."
-    )
-
-    with smtplib.SMTP(args.smtp_host, args.smtp_port, timeout=20) as server:
-        if args.email_use_tls:
-            server.starttls()
-        server.login(args.smtp_user, args.smtp_password)
-        server.send_message(message)
 
 
 def engineer_features(df: DataFrame) -> DataFrame:
@@ -288,9 +253,6 @@ def main() -> None:
 
         alert_count = int(alert_summary["alert_count"]) if alert_summary["alert_count"] is not None else 0
         max_score = float(alert_summary["max_fraud_score"]) if alert_summary["max_fraud_score"] is not None else 0.0
-
-        if alert_count > 0 and max_score >= args.fraud_score_threshold:
-            send_email_alert(args, batch_id=batch_id, alert_count=alert_count, max_score=max_score)
 
         print(
             f"Batch {batch_id}: processed={final_df.count()} alerts={alert_count} max_fraud_score={max_score:.4f}",

@@ -16,7 +16,7 @@ This module implements roadmap Step 3 and Step 5 with PySpark.
 - Writes raw transactions (Bronze), scored data (Silver), and alerts (Gold) to local paths or GCS paths (`gs://...`).
 - Publishes only alert transactions to Kafka topic:
   - `fraud_alerts`
-- Optionally sends email alert summary when `fraud_score` exceeds threshold.
+- Notification delivery is handled by downstream Kafka consumers (email).
 
 ## Prerequisites
 
@@ -66,22 +66,17 @@ spark-submit \
   --fraud-score-threshold 0.80
 ```
 
-## Optional email alerts
+## 4) Alert consumer services
 
-Add these options when running the streaming job:
+Spark publishes alert events to Kafka only. Run scalable downstream consumers from:
 
-```bash
---enable-email-alerts \
---smtp-host smtp.example.com \
---smtp-port 587 \
---smtp-user user@example.com \
---smtp-password '<password>' \
---email-from alerts@example.com \
---email-to oncall@example.com \
---email-use-tls
-```
+- [consumers/README.md](../consumers/README.md)
 
-## 4) Read processed data from data lake
+Available consumers:
+
+- Email consumer
+
+## 5) Read processed data from data lake
 
 Preview scored transactions:
 
@@ -112,7 +107,7 @@ spark-submit streaming/read_datalake_sample.py \
   - `data/lake/silver/scored_transactions`
   - `data/lake/gold/fraud_alerts`
 
-## 5) Run streaming scoring job with GCS (Step 5)
+## 6) Run streaming scoring job with GCS (Step 5)
 
 After Terraform apply, use the output bucket names and write directly to GCS:
 
