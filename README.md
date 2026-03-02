@@ -473,6 +473,23 @@ Feature 7 is implemented in `dbt/` and builds BigQuery warehouse models:
 	dbt test
 	```
 
+## 6.7) Next Step: BI and Reporting (Roadmap Step 9)
+
+You can run Step 9 now and skip Step 8 (Airflow) temporarily.
+
+1. Ensure BigQuery tables/marts are available (Step 6 + Step 7 outputs).
+2. Open BI guide:
+	[dashboards/README.md](dashboards/README.md)
+3. Build Looker Studio report using BigQuery source:
+	- `fraud_analytics.mart_fraud_hourly_kpis`
+4. Add core visuals:
+	- hourly transaction volume
+	- alert volume/rate trend
+	- fraud score trend and p95 score
+	- breakdown by `transaction_type`
+
+Note: while Step 8 is skipped, refresh data manually by running hourly batch + BigQuery load + dbt marts.
+
 ## 7) Minimal Success Criteria (MVP)
 
 - Real-time transaction events flow from simulator → Kafka → Spark scoring.
