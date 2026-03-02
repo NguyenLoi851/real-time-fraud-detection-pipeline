@@ -473,9 +473,34 @@ Feature 7 is implemented in `dbt/` and builds BigQuery warehouse models:
 	dbt test
 	```
 
-## 6.7) Next Step: BI and Reporting (Roadmap Step 9)
+## 6.7) Next Step: Orchestration with Airflow (Roadmap Step 8)
 
-You can run Step 9 now and skip Step 8 (Airflow) temporarily.
+Step 8 is implemented in `airflow/` and automates hourly batch/retraining + warehouse refresh.
+
+Pipeline order in DAG `fraud_hourly_batch_and_warehouse`:
+
+1. `batch/hourly_batch_processing.py` (hourly Spark batch + model refresh)
+2. `batch/load_hourly_batch_to_bigquery.py` (GCS parquet → BigQuery)
+3. `dbt run` + `dbt test` (warehouse models and checks)
+
+1. Open orchestration guide:
+	[airflow/README.md](airflow/README.md)
+2. Configure Dockerized Airflow env:
+	```bash
+	cp airflow/.env.example airflow/.env
+	# edit airflow/.env with your project/bucket values
+	```
+3. Start Airflow stack:
+	```bash
+	chmod +x scripts/airflow/airflow_up.sh scripts/airflow/airflow_down.sh
+	./scripts/airflow/airflow_up.sh
+	```
+4. Open `http://localhost:8080` and enable DAG:
+	- `fraud_hourly_batch_and_warehouse`
+
+## 6.8) Next Step: BI and Reporting (Roadmap Step 9)
+
+Use this after Step 8 is enabled, or run manually if orchestration is paused.
 
 1. Ensure BigQuery tables/marts are available (Step 6 + Step 7 outputs).
 2. Open BI guide:
@@ -488,7 +513,7 @@ You can run Step 9 now and skip Step 8 (Airflow) temporarily.
 	- fraud score trend and p95 score
 	- breakdown by `transaction_type`
 
-Note: while Step 8 is skipped, refresh data manually by running hourly batch + BigQuery load + dbt marts.
+Note: if Airflow is paused, refresh data manually by running hourly batch + BigQuery load + dbt marts.
 
 ## 7) Minimal Success Criteria (MVP)
 
