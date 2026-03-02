@@ -1,6 +1,6 @@
 # BI and Reporting (Roadmap Step 9)
 
-This guide helps you complete roadmap **Step 9** first, without waiting for Step 8 (Airflow).
+This guide helps you complete roadmap **Step 9** using BigQuery outputs from Step 8 orchestration.
 
 You will build a Looker Studio dashboard directly on BigQuery tables/views produced by Step 6 + Step 7.
 
@@ -109,12 +109,14 @@ ORDER BY event_hour_utc DESC, transaction_type
 LIMIT 200;
 ```
 
-## 8) Data Freshness Note (while Step 8 is skipped)
+## 8) Data Freshness Note
 
-Because Airflow is not enabled yet, dashboard freshness depends on manual runs of:
+When Airflow DAG `fraud_hourly_batch_and_warehouse` is enabled, freshness is automatic each hour.
+
+If Airflow is paused, run these manually:
 
 1. Hourly batch job (`batch/hourly_batch_processing.py`)
 2. BigQuery load (`batch/load_hourly_batch_to_bigquery.py`)
 3. dbt mart build (`dbt run --select marts`)
 
-Once Step 8 is added, automate those three in DAGs and keep this same dashboard.
+This keeps the same dashboard current with no chart changes required.
