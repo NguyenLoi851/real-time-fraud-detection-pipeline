@@ -2,6 +2,26 @@
 
 Common checks used across modules.
 
+## Full Data Reset
+
+Make script executable (first time):
+
+```bash
+chmod +x scripts/cleanup/reset_generated_data.sh
+```
+
+Local generated data reset:
+
+```bash
+./scripts/cleanup/reset_generated_data.sh --yes
+```
+
+Preview actions without deleting:
+
+```bash
+./scripts/cleanup/reset_generated_data.sh --dry-run
+```
+
 ## Kafka Checks
 
 List topics:
