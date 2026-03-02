@@ -1,25 +1,16 @@
 # Kafka Producer and Consumer
 
-This module sends transaction events to Kafka and provides a basic consumer for validation.
+## Purpose
 
-## Python Environment
+Publish transaction events to Kafka and validate topic flow with a basic consumer.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
-```
+## Prerequisites
 
-For every new terminal:
-
-```bash
-source .venv/bin/activate
-```
+Complete shared setup first: [../../docs/prerequisites.md](../../docs/prerequisites.md)
 
 ## Start Kafka
 
 ```bash
-chmod +x scripts/kafka/kafka_up.sh scripts/kafka/kafka_down.sh scripts/kafka/kafka_topics.sh scripts/kafka/kafka_topic_create.sh
 ./scripts/kafka/kafka_up.sh
 ```
 
@@ -77,3 +68,5 @@ python3 simulator/kafka/kafka_basic_consumer.py \
 ## Note
 
 `simulator/csv/realtime_csv_simulator.py` is optional when using Kafka flow.
+
+For end-to-end execution order, see [../../docs/runbook-local.md](../../docs/runbook-local.md).

@@ -1,6 +1,12 @@
 # CSV Real-Time Simulator
 
-This module simulates real-time transaction events from CSV to CSV output.
+## Purpose
+
+Simulate real-time transaction events from source CSV to output CSV.
+
+## Prerequisites
+
+Complete shared setup first: [../../docs/prerequisites.md](../../docs/prerequisites.md)
 
 ## What It Does
 
@@ -63,3 +69,7 @@ python3 simulator/csv/realtime_csv_simulator.py \
 	--max-events 100 \
 	--overwrite
 ```
+
+## Next Step
+
+Publish events to Kafka using [../kafka/README.md](../kafka/README.md).

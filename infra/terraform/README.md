@@ -1,12 +1,13 @@
 # Terraform: Cloud Foundation (Step 4)
 
-This Terraform module provisions the minimal GCP foundation for roadmap Step 4:
+## Purpose
 
-- GCS data lake buckets for Bronze, Silver, and Gold zones
-- BigQuery dataset for analytics-ready tables
+Provision minimal GCP foundation resources for lake and warehouse layers.
 
 ## Resources
 
+- GCS data lake buckets for Bronze, Silver, and Gold zones
+- BigQuery dataset for analytics-ready tables
 - `google_storage_bucket.bronze`
 - `google_storage_bucket.silver`
 - `google_storage_bucket.gold`
@@ -14,32 +15,17 @@ This Terraform module provisions the minimal GCP foundation for roadmap Step 4:
 
 ## Prerequisites
 
-- Terraform >= 1.5
-- A GCP project with billing enabled
-- A Google Cloud service account JSON key file (downloaded locally)
+Complete shared setup first: [../../docs/prerequisites.md](../../docs/prerequisites.md)
 
 ## Create Service Account Key (GCP Console)
 
-1. Open **IAM & Admin** → **Service Accounts** in your GCP project.
-2. Click **Create Service Account**.
-3. Give it a name such as `terraform-fraud-infra` and continue.
-4. Grant these roles (minimum for this module):
-	- `Storage Admin`
-	- `BigQuery Admin`
-5. Create the account.
-6. Open the new service account → **Keys** tab.
-7. Click **Add Key** → **Create new key** → select **JSON**.
-8. Download the JSON key file.
-
-Store the key file in this repo under a local folder such as `infra/terraform/keys/`.
-
-Example:
-
-```bash
-cd infra/terraform
-mkdir -p keys
-# move downloaded key to: infra/terraform/keys/terraform-sa-key.json
-```
+1. Open **IAM & Admin** -> **Service Accounts**.
+2. Create service account (example `terraform-fraud-infra`).
+3. Grant roles:
+   - `Storage Admin`
+   - `BigQuery Admin`
+4. Create JSON key and download it.
+5. Store key at `infra/terraform/keys/terraform-sa-key.json`.
 
 ## Configure Variables
 
@@ -47,10 +33,10 @@ mkdir -p keys
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edit `terraform.tfvars` and set at least:
+Edit `terraform.tfvars` and set:
 
 - `project_id`
-- `service_account_key_file` (for example `./keys/terraform-sa-key.json`)
+- `service_account_key_file` (example `./keys/terraform-sa-key.json`)
 
 ## Deploy
 
@@ -67,6 +53,8 @@ After apply, Terraform prints:
 - Bronze/Silver/Gold bucket names
 - BigQuery dataset ID and fully-qualified dataset reference
 
+Use these outputs in [../../docs/runbook-gcp.md](../../docs/runbook-gcp.md) and [../../streaming/README.md](../../streaming/README.md).
+
 ## Destroy
 
 ```bash
@@ -74,3 +62,7 @@ terraform destroy
 ```
 
 If resources are not empty, set `force_destroy = true` in `terraform.tfvars`.
+
+## Troubleshooting
+
+See shared operations guide: [../../docs/operations.md](../../docs/operations.md)

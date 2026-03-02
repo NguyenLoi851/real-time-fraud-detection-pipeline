@@ -1,122 +1,46 @@
-# BI and Reporting (Roadmap Step 9)
+# BI and Reporting
 
-This guide helps you complete roadmap **Step 9** using BigQuery outputs from Step 8 orchestration.
+## Purpose
 
-You will build a Looker Studio dashboard directly on BigQuery tables/views produced by Step 6 + Step 7.
+Build and operate a Looker Studio dashboard from BigQuery warehouse outputs.
 
-## 1) Prerequisites
+## Prerequisites
 
-- BigQuery dataset exists (default: `fraud_analytics`).
-- dbt models are built (at minimum `mart_fraud_hourly_kpis`).
-- Your account has BigQuery read access.
+- BigQuery dataset available (default `fraud_analytics`)
+- dbt marts built (at minimum `mart_fraud_hourly_kpis`)
+- BigQuery read access
 
-If needed, rebuild dbt models:
+For execution prerequisites and pipeline order, see [../docs/runbook-gcp.md](../docs/runbook-gcp.md).
 
-```bash
-cd dbt
-dbt run --select marts
-dbt test --select mart_fraud_hourly_kpis
-```
+## Source Tables
 
-## 2) BI Source Tables
+- Primary: `fraud_analytics.mart_fraud_hourly_kpis`
+- Optional drill-down: `fraud_analytics.fct_fraud_alerts`
 
-Primary source for dashboard cards:
+## Recommended Charts
 
-- `fraud_analytics.mart_fraud_hourly_kpis`
+Use `event_hour_utc` as default time dimension.
 
-Useful supporting source (optional drill-down):
+1. Hourly transaction volume (`SUM(transaction_count)`)
+2. Hourly alert volume (`SUM(alert_count)`)
+3. Alert rate trend (`AVG(alert_rate_recomputed)`)
+4. Fraud score trend (`AVG(avg_fraud_score)`, `MAX(max_fraud_score)`)
+5. P95 score trend (`AVG(p95_fraud_score)`)
+6. Transaction type breakdown (`transaction_type`)
 
-- `fraud_analytics.fct_fraud_alerts`
+## Recommended Filters
 
-## 3) Recommended Looker Studio Charts
-
-Use `event_hour_utc` as the default time dimension.
-
-1. **Hourly Transaction Volume**
-   - Dimension: `event_hour_utc`
-   - Metric: `SUM(transaction_count)`
-
-2. **Hourly Alert Volume**
-   - Dimension: `event_hour_utc`
-   - Metric: `SUM(alert_count)`
-
-3. **Alert Rate Trend**
-   - Dimension: `event_hour_utc`
-   - Metric: `AVG(alert_rate_recomputed)`
-
-4. **Fraud Score Trend**
-   - Dimension: `event_hour_utc`
-   - Metrics: `AVG(avg_fraud_score)`, `MAX(max_fraud_score)`
-
-5. **P95 Score Trend**
-   - Dimension: `event_hour_utc`
-   - Metric: `AVG(p95_fraud_score)`
-
-6. **Transaction Type Breakdown**
-   - Dimension: `transaction_type`
-   - Metrics: `SUM(transaction_count)`, `SUM(alert_count)`
-
-## 4) Suggested Dashboard Filters
-
-- Date range filter on `event_hour_utc`
+- Date range on `event_hour_utc`
 - Drop-down filter on `transaction_type`
 
-## 5) How to Build the Report in Looker Studio
+## Build Steps
 
-1. Open Looker Studio: https://lookerstudio.google.com/
-2. Click **Create** → **Report**.
-3. Add data source:
-   - Connector: **BigQuery**
-   - Project: your GCP project
-   - Dataset: `fraud_analytics`
-   - Table: `mart_fraud_hourly_kpis`
-4. In the data source schema, verify:
-   - `event_hour_utc` is **Date & Time**
-   - rate/score fields are **Number**
-5. Add charts listed in Section 3 and assign dimensions/metrics exactly.
-6. Add controls:
-   - **Date range control** (top of report)
-   - **Drop-down list control** for `transaction_type`
-7. Save report with a clear name, for example:
-   - `Fraud Monitoring - Hourly KPI Dashboard`
+1. Open https://lookerstudio.google.com/
+2. Create report and add BigQuery source `fraud_analytics.mart_fraud_hourly_kpis`.
+3. Add charts and filters listed above.
+4. Save report (example: `Fraud Monitoring - Hourly KPI Dashboard`).
 
-## 6) How to Interact with the Dashboard
+## Freshness
 
-- Use the date-range control first (for example last 24h, 7d, or custom period).
-- Use `transaction_type` drop-down to focus on one segment.
-- Click a bar/line point/category in a chart to cross-filter other charts.
-- Use chart-level menu (**⋮**) to sort or inspect chart data as a table.
-- Click blank canvas area to clear single-click chart filters.
-- Use **Reset** (top-right) to clear all active interactions and return to default view.
-
-## 7) Optional SQL Validation (BigQuery)
-
-Before connecting Looker Studio, sanity check the KPI table:
-
-```sql
-SELECT
-  event_hour_utc,
-  transaction_type,
-  transaction_count,
-  alert_count,
-  alert_rate_recomputed,
-  avg_fraud_score,
-  p95_fraud_score,
-  max_fraud_score,
-  observed_fraud_rate
-FROM `fraud_analytics.mart_fraud_hourly_kpis`
-ORDER BY event_hour_utc DESC, transaction_type
-LIMIT 200;
-```
-
-## 8) Data Freshness Note
-
-When Airflow DAG `fraud_hourly_batch_and_warehouse` is enabled, freshness is automatic each hour.
-
-If Airflow is paused, run these manually:
-
-1. Hourly batch job (`batch/hourly_batch_processing.py`)
-2. BigQuery load (`batch/load_hourly_batch_to_bigquery.py`)
-3. dbt mart build (`dbt run --select marts`)
-
-This keeps the same dashboard current with no chart changes required.
+- Automatic: when Airflow DAG is enabled.
+- Manual refresh path: batch job -> BigQuery load -> dbt marts.

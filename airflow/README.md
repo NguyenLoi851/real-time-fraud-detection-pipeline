@@ -1,23 +1,21 @@
-# Orchestration with Airflow (Roadmap Step 8)
+# Airflow Orchestration
 
-This module runs Airflow in Docker and automates the hourly batch + warehouse flow:
+## Purpose
 
-1. Spark hourly batch (`batch/hourly_batch_processing.py`)
-2. BigQuery load from GCS (`batch/load_hourly_batch_to_bigquery.py`)
-3. dbt models + tests (`dbt run`, `dbt test`)
+Run the hourly orchestration pipeline in Dockerized Airflow.
 
-DAG file:
+Pipeline DAG: `airflow/dags/fraud_hourly_orchestration.py`
 
-- `airflow/dags/fraud_hourly_orchestration.py`
+## Inputs and Outputs
 
-## 1) Prerequisites
+- Inputs: Silver scored transactions, labels history, runtime env vars.
+- Outputs: Curated parquet on GCS, BigQuery loaded tables, dbt warehouse refresh.
 
-- Docker Desktop (or Docker Engine + Compose plugin) is installed and running.
-- GCP service account key file exists at `infra/terraform/keys/terraform-sa-key.json`.
+## Prerequisites
 
-## 2) Configure environment for containers
+Complete shared setup first: [../docs/prerequisites.md](../docs/prerequisites.md)
 
-Copy and edit the environment file:
+## Configure Environment
 
 ```bash
 cp airflow/.env.example airflow/.env
@@ -31,16 +29,15 @@ Update at least:
 - `FRAUD_BATCH_OUTPUT_BASE`
 - `FRAUD_MODEL_OUTPUT`
 
-## 3) Start Airflow with Docker Compose
+## Run
 
-Option A (helper scripts):
+Start stack (helper scripts):
 
 ```bash
-chmod +x scripts/airflow/airflow_up.sh scripts/airflow/airflow_down.sh
 ./scripts/airflow/airflow_up.sh
 ```
 
-Option B (direct compose):
+Alternative direct compose:
 
 ```bash
 cd airflow
@@ -59,18 +56,14 @@ Stop stack:
 ./scripts/airflow/airflow_down.sh
 ```
 
-## 4) What the DAG does
+## Task Sequence
 
-- `validate_runtime`: checks required env vars + binaries.
-- `run_hourly_batch`: processes one hour slice using Airflow `data_interval_start` in UTC.
-- `load_batch_to_bigquery`: loads parquet outputs from `FRAUD_BATCH_OUTPUT_BASE` to BigQuery.
-- `run_dbt_models`: rebuilds warehouse models.
-- `run_dbt_tests`: runs dbt tests.
+1. `validate_runtime`
+2. `run_hourly_batch`
+3. `load_batch_to_bigquery`
+4. `run_dbt_models`
+5. `run_dbt_tests`
 
-## 5) Notes
+## Troubleshooting
 
-- The custom image is defined in `airflow/Dockerfile` and includes Java, PySpark, BigQuery client, and dbt-bigquery.
-- The project root is mounted into the container at `/opt/project`.
-- Ensure the service account has read/write access to GCS and BigQuery dataset permissions.
-- `run_hourly_batch` includes periodic model refresh using latest labeled records.
-- If you see `spark-submit: command not found`, set `FRAUD_SPARK_SUBMIT_BIN=/home/airflow/.local/bin/spark-submit` in `airflow/.env` and restart Airflow services.
+See shared operations guide: [../docs/operations.md](../docs/operations.md)

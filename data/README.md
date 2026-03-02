@@ -1,8 +1,18 @@
 # PaySim Dataset Column Guide
 
+## Purpose
+
+Define dataset placement and column semantics used by training, streaming, and batch jobs.
+
+## Prerequisites
+
+See shared setup: [../docs/prerequisites.md](../docs/prerequisites.md)
+
 ## Dataset Setup
 
-1. Download the dataset from the Kaggle link in the root README.
+Kaggle dataset URL: https://www.kaggle.com/datasets/ealaxi/paysim1
+
+1. Download the dataset from the URL above.
 2. Unzip the downloaded file.
 3. Rename the CSV file to `transaction_log.csv`.
 4. Put it in this `data/` folder.
@@ -64,3 +74,5 @@ Transactions detected as fraud are cancelled. For fraud detection modeling, thes
 - `newbalanceOrig`
 - `oldbalanceDest`
 - `newbalanceDest`
+
+For end-to-end execution order, see [../docs/runbook-local.md](../docs/runbook-local.md) and [../docs/runbook-gcp.md](../docs/runbook-gcp.md).
