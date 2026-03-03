@@ -16,10 +16,33 @@ Local generated data reset:
 ./scripts/cleanup/reset_generated_data.sh --yes
 ```
 
+Service-specific reset (combine flags as needed):
+
+```bash
+./scripts/cleanup/reset_generated_data.sh --yes --kafka
+./scripts/cleanup/reset_generated_data.sh --yes --spark --terraform
+./scripts/cleanup/reset_generated_data.sh --yes --airflow --dbt
+```
+
+Supported service flags:
+
+- `--kafka`
+- `--spark`
+- `--airflow`
+- `--dbt`
+- `--terraform`
+- `--simulator`
+
 Preview actions without deleting:
 
 ```bash
 ./scripts/cleanup/reset_generated_data.sh --dry-run
+```
+
+Preview selected service cleanup:
+
+```bash
+./scripts/cleanup/reset_generated_data.sh --dry-run --spark --terraform
 ```
 
 ## Kafka Checks
