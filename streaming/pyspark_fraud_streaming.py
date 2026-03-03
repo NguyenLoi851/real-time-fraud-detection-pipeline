@@ -157,6 +157,7 @@ def main() -> None:
 
     def process_batch(batch_df: DataFrame, batch_id: int) -> None:
         if batch_df.rdd.isEmpty():
+            print(f"Batch {batch_id}: no records in this micro-batch", flush=True)
             return
 
         raw_df = batch_df.withColumn(
@@ -183,6 +184,12 @@ def main() -> None:
         ]
 
         raw_df.select(*raw_write_cols).write.mode("append").parquet(args.datalake_raw_path)
+
+        raw_count = raw_df.count()
+        print(
+            f"Batch {batch_id}: raw write success path={args.datalake_raw_path} records={raw_count}",
+            flush=True,
+        )
 
         featured_df = engineer_features(batch_df)
         scored_df = model.transform(featured_df)
@@ -237,25 +244,41 @@ def main() -> None:
 
         final_df.select(*write_cols).write.mode("append").parquet(args.datalake_scored_path)
 
+        scored_count = final_df.count()
+        print(
+            f"Batch {batch_id}: scored write success path={args.datalake_scored_path} records={scored_count}",
+            flush=True,
+        )
+
         alerts_df = final_df.filter(F.col("is_alert"))
         alerts_df.select(*write_cols).write.mode("append").parquet(args.datalake_alerts_path)
+
+        alert_count = alerts_df.count()
+        print(
+            f"Batch {batch_id}: alerts write success path={args.datalake_alerts_path} records={alert_count}",
+            flush=True,
+        )
 
         alerts_kafka_df = alerts_df.select(
             F.col("nameOrig").cast("string").alias("key"),
             F.to_json(F.struct(*[F.col(c) for c in write_cols])).alias("value"),
         )
         alerts_kafka_df.write.format("kafka").options(**kafka_options).option("topic", args.alerts_topic).save()
+        print(
+            f"Batch {batch_id}: kafka publish success topic={args.alerts_topic} records={alert_count}",
+            flush=True,
+        )
 
         alert_summary = alerts_df.agg(
             F.count(F.lit(1)).alias("alert_count"),
             F.max("fraud_score").alias("max_fraud_score"),
         ).collect()[0]
 
-        alert_count = int(alert_summary["alert_count"]) if alert_summary["alert_count"] is not None else 0
+        alert_count_summary = int(alert_summary["alert_count"]) if alert_summary["alert_count"] is not None else 0
         max_score = float(alert_summary["max_fraud_score"]) if alert_summary["max_fraud_score"] is not None else 0.0
 
         print(
-            f"Batch {batch_id}: processed={final_df.count()} alerts={alert_count} max_fraud_score={max_score:.4f}",
+            f"Batch {batch_id}: processed={scored_count} alerts={alert_count_summary} max_fraud_score={max_score:.4f}",
             flush=True,
         )
 
