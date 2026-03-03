@@ -15,6 +15,8 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 
 ## Architecture (High Level)
 
+![Data Pipeline Diagram](images/data-pipeline.png)
+
 1. Simulator produces transaction events.
 2. Kafka ingests raw events on `transactions_raw`.
 3. Spark Structured Streaming scores events and emits:
