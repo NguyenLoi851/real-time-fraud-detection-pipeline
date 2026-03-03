@@ -31,6 +31,7 @@ Compose file location:
 ./scripts/kafka/kafka_topic_create.sh transactions_raw
 ./scripts/kafka/kafka_topics.sh --list
 ./scripts/kafka/kafka_topics.sh --describe --topic transactions_raw
+./scripts/kafka/kafka_topic_count.sh transactions_raw
 ```
 
 ## Run Producer
