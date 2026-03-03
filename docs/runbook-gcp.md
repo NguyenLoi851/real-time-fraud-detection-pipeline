@@ -4,54 +4,15 @@ This runbook follows roadmap steps for GCS + BigQuery execution.
 
 ## 1) One-Time Setup
 
-From project root:
+Complete shared one-time setup in [prerequisites.md](prerequisites.md).
 
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
-python3 -m pip install -r dbt/requirements.txt
-```
+Then verify dataset file exists:
 
-Make helper scripts executable:
-
-```bash
-chmod +x scripts/kafka/kafka_up.sh scripts/kafka/kafka_down.sh scripts/kafka/kafka_topics.sh scripts/kafka/kafka_topic_create.sh
-chmod +x scripts/airflow/airflow_up.sh scripts/airflow/airflow_down.sh
-```
-
-Prepare dataset file:
-
-- Ensure `data/transaction_log.csv` exists.
+- `data/transaction_log.csv`
 
 ## 2) Provision GCP Foundation (Terraform)
 
-Create service account key and place it at:
-
-- `infra/terraform/keys/terraform-sa-key.json`
-
-Then run Terraform:
-
-```bash
-cd infra/terraform
-cp terraform.tfvars.example terraform.tfvars
-# edit terraform.tfvars and set:
-# - project_id
-# - service_account_key_file=./keys/terraform-sa-key.json
-terraform init
-terraform plan
-terraform apply
-```
-
-Capture outputs and export them as shell variables:
-
-```bash
-export FRAUD_GCP_PROJECT_ID="<your-gcp-project-id>"
-export FRAUD_BRONZE_BUCKET="<terraform-output-bronze-bucket-name>"
-export FRAUD_SILVER_BUCKET="<terraform-output-silver-bucket-name>"
-export FRAUD_GOLD_BUCKET="<terraform-output-gold-bucket-name>"
-export FRAUD_BQ_DATASET="fraud_analytics"
-```
+Provision infrastructure using [../infra/terraform/README.md](../infra/terraform/README.md).
 
 Go back to project root:
 
@@ -59,10 +20,10 @@ Go back to project root:
 cd ../..
 ```
 
-## 3) Export GCP Credentials
+## 3) Verify GCP Credentials File
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-key.json"
+GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-key.json"
 ```
 
 Optional quick check:
@@ -91,7 +52,8 @@ python3 simulator/kafka/kafka_csv_producer.py \
    --bootstrap-servers localhost:9092 \
    --topic transactions_raw \
    --interval-min 0.3 \
-   --interval-max 1.0
+   --interval-max 1.0 \
+   --max-events 100
 ```
 
 ## 6) Train Baseline Model Artifact
@@ -102,29 +64,39 @@ spark-submit ml/train_fraud_model.py \
    --model-output ml/artifacts/fraud_rf_pipeline
 ```
 
-## 7) Run Streaming to GCS
+## 6.1) Export Runtime Variables (Per New Terminal)
 
-Run in another terminal:
+Run this in each new terminal before steps that use `gs://...` paths or BigQuery:
 
 ```bash
-source .venv/bin/activate
+export FRAUD_GCP_PROJECT_ID="<your-gcp-project-id>"
+export FRAUD_BRONZE_BUCKET="<terraform-output-bronze-bucket-name>"
+export FRAUD_SILVER_BUCKET="<terraform-output-silver-bucket-name>"
+export FRAUD_GOLD_BUCKET="<terraform-output-gold-bucket-name>"
+export FRAUD_BQ_DATASET="fraud_analytics"
 export GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-key.json"
-
-spark-submit \
-   --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1,com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
-   streaming/pyspark_fraud_streaming.py \
-   --bootstrap-servers localhost:9092 \
-   --input-topic transactions_raw \
-   --alerts-topic fraud_alerts \
-   --model-path ml/artifacts/fraud_rf_pipeline \
-   --checkpoint-dir gs://$FRAUD_BRONZE_BUCKET/checkpoints/fraud_stream \
-   --datalake-raw-path gs://$FRAUD_BRONZE_BUCKET/raw/transactions_raw \
-   --datalake-scored-path gs://$FRAUD_SILVER_BUCKET/scored_transactions \
-   --datalake-alerts-path gs://$FRAUD_GOLD_BUCKET/fraud_alerts \
-   --fraud-score-threshold 0.80
 ```
 
-## 8) Run Alert Consumer (Optional)
+## 7) Run Alert Consumer First (Recommended)
+
+Run in a dedicated terminal and keep it running before starting Spark streaming.
+
+### 7.1) Configure consumer email settings
+
+```bash
+cp consumers/.env.example consumers/.env
+```
+
+Edit `consumers/.env` and set at least:
+
+- `ALERT_SMTP_HOST`
+- `ALERT_SMTP_PORT` (usually `587`)
+- `ALERT_SMTP_USER`
+- `ALERT_SMTP_PASSWORD`
+- `ALERT_EMAIL_FROM`
+- `ALERT_EMAIL_TO`
+
+### 7.2) Start consumer
 
 ```bash
 source .venv/bin/activate
@@ -133,6 +105,43 @@ python3 consumers/alert_email_consumer.py \
    --topic fraud_alerts \
    --group-id fraud-alerts-email-consumer \
    --email-use-tls
+```
+
+Expected startup log:
+
+- `Email consumer listening topic='fraud_alerts' bootstrap='localhost:9092' group='fraud-alerts-email-consumer'`
+
+If no new alerts appear during reruns, use a new group id or add `--from-beginning` for replay.
+
+### 7.3) Optional quick smoke test before Spark
+
+```bash
+python3 consumers/publish_test_alert.py --topic fraud_alerts --count 1
+```
+
+You should see `Email sent for message 1` in the consumer terminal.
+
+## 8) Run Streaming to GCS
+
+Run in another terminal:
+
+```bash
+source .venv/bin/activate
+# Run exports from step 6.1 in this terminal before spark-submit.
+
+spark-submit \
+   --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1,com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
+   streaming/pyspark_fraud_streaming.py \
+   --bootstrap-servers localhost:9092 \
+   --input-topic transactions_raw \
+   --alerts-topic fraud_alerts \
+   --starting-offsets earliest \
+   --model-path ml/artifacts/fraud_rf_pipeline \
+   --checkpoint-dir gs://$FRAUD_BRONZE_BUCKET/checkpoints/fraud_stream \
+   --datalake-raw-path gs://$FRAUD_BRONZE_BUCKET/raw/transactions_raw \
+   --datalake-scored-path gs://$FRAUD_SILVER_BUCKET/scored_transactions \
+   --datalake-alerts-path gs://$FRAUD_GOLD_BUCKET/fraud_alerts \
+   --fraud-score-threshold 0.80
 ```
 
 ## 9) Start Airflow Orchestration (Preferred)
@@ -185,7 +194,7 @@ Use this only if Airflow is paused or unavailable.
 
 ```bash
 source .venv/bin/activate
-export GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-key.json"
+# Run exports from step 6.1 in this terminal before spark-submit.
 
 spark-submit \
    --packages com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
@@ -200,7 +209,7 @@ spark-submit \
 
 ```bash
 source .venv/bin/activate
-export GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-key.json"
+# Run exports from step 6.1 in this terminal before python3.
 
 python3 batch/load_hourly_batch_to_bigquery.py \
    --project-id "$FRAUD_GCP_PROJECT_ID" \
@@ -219,7 +228,7 @@ cp dbt/profiles.yml.example dbt/profiles.yml
 export DBT_PROFILES_DIR="$PWD/dbt"
 export DBT_BIGQUERY_PROJECT="$FRAUD_GCP_PROJECT_ID"
 export DBT_BIGQUERY_DATASET="$FRAUD_BQ_DATASET"
-export GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-key.json"
+# Run exports from step 6.1 in this terminal before dbt commands.
 
 cd dbt
 dbt debug
