@@ -84,5 +84,8 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
          - Adds connector/runtime complexity and can be harder to operate at scale.
 
       Recommended pattern here: Spark writes curated parquet to GCS, then Python load jobs ingest to BigQuery, then dbt builds warehouse models.
+   - How does Kafka separate data with partition ? 
+   - How does group id of consumers in Kafka work ?
 - [x] Add one end-to-end runbook to execute the project from start to finish (local and optional GCP path).
-- [ ] Add images/diagrams for end-to-end flow and major pipeline steps.
+- [x] Add images/diagrams for end-to-end flow and major pipeline steps.
+- [ ] Check logic of fraud score threshold.
