@@ -30,6 +30,7 @@ Complete shared setup first: [../../docs/prerequisites.md](../../docs/prerequisi
 ## Configure Variables
 
 ```bash
+cd infra/terraform
 cp terraform.tfvars.example terraform.tfvars
 ```
 
