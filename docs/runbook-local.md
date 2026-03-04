@@ -63,11 +63,19 @@ python3 consumers/alert_email_consumer.py \
 spark-submit batch/hourly_batch_processing.py \
   --silver-path data/lake/silver/scored_transactions \
   --labels-csv data/transaction_log.csv \
-  --output-base data/lake/gold/hourly_batch \
+  --output-base data/lake/gold/hourly_batch
+```
+
+## 8) Run Daily Model Refresh Locally (Optional)
+
+```bash
+spark-submit batch/daily_model_refresh.py \
+  --silver-path data/lake/silver/scored_transactions \
+  --labels-csv data/transaction_log.csv \
   --model-output ml/artifacts/fraud_rf_pipeline
 ```
 
-## 8) Stop Kafka
+## 9) Stop Kafka
 
 ```bash
 ./scripts/kafka/kafka_down.sh

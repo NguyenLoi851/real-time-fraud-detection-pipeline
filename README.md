@@ -22,10 +22,10 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 3. Spark Structured Streaming scores events and emits:
    - lake raw/scored/alerts outputs
    - Kafka alert events on `fraud_alerts`
-4. Hourly Spark batch prepares curated and retraining datasets.
+4. Hourly Spark batch prepares curated and monitoring/retraining datasets.
 5. BigQuery load jobs ingest curated outputs.
 6. dbt builds warehouse models.
-7. Airflow orchestrates the hourly workflow.
+7. Airflow orchestrates hourly warehouse refresh plus daily model refresh.
 8. Looker Studio visualizes KPI marts.
 
 ## Documentation Entry Points

@@ -146,7 +146,19 @@ spark-submit \
 
 ## 9) Start Airflow Orchestration (Preferred)
 
-Prepare env file:
+Recommended: generate `airflow/.env` from Step 6.1 exported variables:
+
+```bash
+./scripts/airflow/write_airflow_env.sh
+```
+
+Quick check before starting Airflow:
+
+```bash
+grep -E 'FRAUD_GCP_PROJECT_ID|FRAUD_SILVER_PATH|FRAUD_BATCH_OUTPUT_BASE|FRAUD_MODEL_OUTPUT|FRAUD_BIGQUERY_DATASET' airflow/.env
+```
+
+Manual fallback (only if you do not use the script):
 
 ```bash
 cp airflow/.env.example airflow/.env
@@ -154,11 +166,15 @@ cp airflow/.env.example airflow/.env
 
 Edit `airflow/.env` and set at least:
 
-- `FRAUD_GCP_PROJECT_ID=$FRAUD_GCP_PROJECT_ID`
-- `DBT_BIGQUERY_PROJECT=$FRAUD_GCP_PROJECT_ID`
-- `FRAUD_SILVER_PATH=gs://$FRAUD_SILVER_BUCKET/scored_transactions`
-- `FRAUD_BATCH_OUTPUT_BASE=gs://$FRAUD_GOLD_BUCKET/hourly_batch`
-- `FRAUD_MODEL_OUTPUT=gs://$FRAUD_GOLD_BUCKET/models/fraud_rf_pipeline`
+- `FRAUD_GCP_PROJECT_ID=<your real gcp project id>`
+- `DBT_BIGQUERY_PROJECT=<same real gcp project id>`
+- `FRAUD_BIGQUERY_DATASET=fraud_analytics`
+- `FRAUD_BQ_RETRAINING_TABLE=retraining_dataset`
+- `FRAUD_SILVER_PATH=gs://<your-silver-bucket>/scored_transactions`
+- `FRAUD_BATCH_OUTPUT_BASE=gs://<your-gold-bucket>/hourly_batch`
+- `FRAUD_MODEL_OUTPUT=gs://<your-gold-bucket>/models/fraud_rf_pipeline`
+
+Important: in `airflow/.env`, do not keep literal `$FRAUD_...` placeholders. Values must be concrete strings.
 
 Start Airflow:
 
@@ -175,6 +191,7 @@ Open UI:
 Enable DAG:
 
 - `fraud_hourly_batch_and_warehouse`
+- `fraud_daily_model_refresh` (daily model retraining)
 
 Wait for DAG completion, then continue to dashboard step.
 
@@ -201,8 +218,7 @@ spark-submit \
    batch/hourly_batch_processing.py \
    --silver-path gs://$FRAUD_SILVER_BUCKET/scored_transactions \
    --labels-csv data/transaction_log.csv \
-   --output-base gs://$FRAUD_GOLD_BUCKET/hourly_batch \
-   --model-output gs://$FRAUD_GOLD_BUCKET/models/fraud_rf_pipeline
+   --output-base gs://$FRAUD_GOLD_BUCKET/hourly_batch
 ```
 
 ### 11.2) Load Curated Outputs to BigQuery
@@ -236,6 +252,22 @@ dbt deps
 dbt run
 dbt test
 cd ..
+```
+
+### 11.4) Run Daily Model Refresh Manually (Optional)
+
+```bash
+source .venv/bin/activate
+# Run exports from step 6.1 in this terminal before spark-submit.
+
+spark-submit \
+   --packages com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
+   batch/daily_model_refresh.py \
+   --training-source bigquery \
+   --project-id "$FRAUD_GCP_PROJECT_ID" \
+   --dataset "$FRAUD_BQ_DATASET" \
+   --retraining-table retraining_dataset \
+   --model-output gs://$FRAUD_GOLD_BUCKET/models/fraud_rf_pipeline
 ```
 
 ## 12) Stop Local Services
