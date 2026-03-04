@@ -92,13 +92,11 @@ command -v dbt >/dev/null 2>&1 || {
   --silver-path "${FRAUD_SILVER_PATH:-data/lake/silver/scored_transactions}" \
   --labels-csv "${FRAUD_LABELS_CSV:-data/transaction_log.csv}" \
   --output-base "${FRAUD_BATCH_OUTPUT_BASE}" \
-  --model-output "${FRAUD_MODEL_OUTPUT}" \
   --target-hour-utc "{{ data_interval_start.in_timezone('UTC').strftime('%Y-%m-%d-%H') }}"
 """
         ),
         env={
             "FRAUD_BATCH_OUTPUT_BASE": os.environ.get("FRAUD_BATCH_OUTPUT_BASE", "gs://REPLACE_GOLD_BUCKET/hourly_batch"),
-            "FRAUD_MODEL_OUTPUT": os.environ.get("FRAUD_MODEL_OUTPUT", "gs://REPLACE_GOLD_BUCKET/models/fraud_rf_pipeline"),
             "FRAUD_SPARK_SUBMIT_BIN": os.environ.get("FRAUD_SPARK_SUBMIT_BIN", "/home/airflow/.local/bin/spark-submit"),
             "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""),
         },
