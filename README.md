@@ -10,8 +10,9 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 - Publish high-risk alerts to Kafka for downstream consumers.
 - Persist Bronze/Silver/Gold datasets in lake storage.
 - Reconcile predictions with labels in hourly batch.
+- Retrain the fraud model daily from curated/retraining data.
 - Build warehouse facts/dimensions/marts in BigQuery via dbt.
-- Orchestrate hourly refresh with Airflow.
+- Orchestrate hourly warehouse refresh and daily ML retraining with Airflow.
 
 ## Architecture (High Level)
 
@@ -25,7 +26,7 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 4. Hourly Spark batch prepares curated and monitoring/retraining datasets.
 5. BigQuery load jobs ingest curated outputs.
 6. dbt builds warehouse models.
-7. Airflow orchestrates hourly warehouse refresh plus daily model refresh.
+7. Airflow orchestrates hourly warehouse refresh plus daily model retraining.
 8. Looker Studio visualizes KPI marts.
 
 ## Documentation Entry Points
