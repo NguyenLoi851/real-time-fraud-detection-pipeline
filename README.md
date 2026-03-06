@@ -66,27 +66,52 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 - If content is shared by 2+ modules, place it in `docs/` and link to it.
 - Module READMEs contain only module-specific behavior and commands.
 
-## 9) Future Plan (Backlog)
+## Questions
+
+**In this pipeline, which steps are Extract / Load / Transform?**
+
+This pipeline follows an ELT pattern for the analytics layer, with an additional streaming transform stage:
+
+- **Extract**: The simulator produces raw transaction events and publishes them to Kafka (`transactions_raw`). This is the point of raw data ingestion from the source system.
+- **Load**: Two load steps exist:
+  - Spark Structured Streaming writes raw, scored, and alert outputs to GCS (Bronze/Silver lake storage).
+  - BigQuery load jobs ingest curated GCS parquet files and data in GCS into BigQuery tables, making data available for warehouse modeling.
+- **Transform**: Transformations happen at two levels:
+  - Spark (streaming + batch): scores transactions, filters alerts, and prepares curated/retraining datasets.
+  - dbt (warehouse): builds facts, dimensions, and marts inside BigQuery from the loaded curated data.
+
+**What is the difference between Fact, Dimension, and Mart tables?**
+
+- **Fact table**: Stores measurable business events (e.g., a transaction with amount, timestamp, fraud score). Rows are typically many and grow over time.
+- **Dimension table**: Stores descriptive context for facts (e.g., account info, transaction type). Used to filter, group, or label fact rows.
+- **Mart table**: A pre-aggregated or pre-joined table built for a specific analytical use case (e.g., hourly KPI summary for a dashboard). Combines facts and dimensions into a consumer-ready shape.
+
+**What are the trade-offs between sending notifications directly from Spark vs publishing alerts to Kafka and handling notifications via consumers?**
+
+- Direct Spark notification: simpler, fewer moving parts, but tightly couples scoring logic to delivery logic; harder to scale or retry independently.
+- Kafka + consumers: decouples detection from delivery, allows multiple independent consumers (email, Slack, audit log), and supports replay/retry — at the cost of added infrastructure complexity.
+
+**Should we load data from GCS parquet to BigQuery with Python, or write directly from Spark to BigQuery?**
+
+- Python BigQuery load job (recommended for this project):
+  - Keeps Spark focused on transformations and reliable GCS lake writes.
+  - Uses BigQuery native load jobs for lower cost and easier retry/operations.
+  - Works well with orchestration and dbt dependencies.
+- Spark direct write to BigQuery:
+  - Useful when all logic must stay in one Spark job.
+  - Adds connector/runtime complexity and can be harder to operate at scale.
+
+Recommended pattern: Spark writes curated parquet to GCS → Python load jobs ingest to BigQuery → dbt builds warehouse models.
+
+**How does Kafka separate data with partitions?**
+
+**How does the group ID of consumers in Kafka work?**
+
+## Future Plan (Backlog)
 
 - [x] Refactor and simplify root `README.md` to improve clarity and reduce long sections.
 - [x] Remove duplicated instructions across `README.md`, `streaming/README.md`, and simulator docs.
-- [ ] Add a project FAQ/Q&A section, for example:
-   - What is the difference between Fact, Dimension, and Mart tables?
-   - In this pipeline, which steps are Extract / Load / Transform?
-   - What are the trade-offs between sending notifications directly from Spark vs publishing alerts to Kafka and handling notifications via consumers?
-   - Should we load data from GCS parquet to BigQuery with Python, or write directly from Spark to BigQuery?
-
-      - Python BigQuery load job (recommended for this project):
-         - Keep Spark focused on transformations and reliable GCS lake writes.
-         - Use BigQuery native load jobs for lower cost and easier retry/operations.
-         - Works well with orchestration and dbt dependencies.
-      - Spark direct write to BigQuery:
-         - Useful when all logic must stay in one Spark job.
-         - Adds connector/runtime complexity and can be harder to operate at scale.
-
-      Recommended pattern here: Spark writes curated parquet to GCS, then Python load jobs ingest to BigQuery, then dbt builds warehouse models.
-   - How does Kafka separate data with partition ? 
-   - How does group id of consumers in Kafka work ?
+- [x] Add a project FAQ/Q&A section.
 - [x] Add one end-to-end runbook to execute the project from start to finish (local and optional GCP path).
 - [x] Add images/diagrams for end-to-end flow and major pipeline steps.
 - [ ] Check logic of fraud score threshold.
