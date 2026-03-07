@@ -105,7 +105,19 @@ Recommended pattern: Spark writes curated parquet to GCS → Python load jobs in
 
 **How does Kafka separate data with partitions?**
 
+- A Kafka topic is split into multiple partitions, and each message is written to exactly one partition.
+- Ordering is guaranteed only within a single partition (not across the whole topic).
+- If a producer sends a key (for example, `account_id`), Kafka hashes the key so related events land in the same partition.
+- If no key is provided, Kafka spreads events across partitions for better parallelism.
+- In this pipeline, partitions let ingestion/scoring/consumption scale horizontally while keeping per-key event order.
+
 **How does the group ID of consumers in Kafka work?**
+
+- `group.id` identifies a consumer group (a shared subscription).
+- Inside one group, Kafka assigns partitions so each partition is consumed by only one consumer instance at a time.
+- This means consumers in the same group split the workload for throughput.
+- Different group IDs read the same topic independently, so each downstream app can process all events.
+- Offsets are tracked per `group.id`, enabling independent replay/progress for each consumer application.
 
 ## Future Plan (Backlog)
 
