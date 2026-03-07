@@ -40,6 +40,17 @@ Update at least:
 - `FRAUD_BATCH_OUTPUT_BASE`
 - `FRAUD_MODEL_OUTPUT`
 
+Optional for task alerts:
+
+- `FRAUD_ALERT_EMAILS` (comma-separated recipients, e.g. `alerts@company.com,oncall@company.com`)
+- SMTP transport in `airflow/.env`:
+	- `AIRFLOW__SMTP__SMTP_HOST`
+	- `AIRFLOW__SMTP__SMTP_PORT`
+	- `AIRFLOW__SMTP__SMTP_MAIL_FROM`
+	- optional: `AIRFLOW__SMTP__SMTP_USER`, `AIRFLOW__SMTP__SMTP_PASSWORD`, `AIRFLOW__SMTP__SMTP_STARTTLS`, `AIRFLOW__SMTP__SMTP_SSL`
+
+To actually deliver emails, make sure SMTP is configured in your Airflow environment (for example via `AIRFLOW__SMTP__SMTP_HOST`, `AIRFLOW__SMTP__SMTP_PORT`, `AIRFLOW__SMTP__SMTP_MAIL_FROM`, and optional auth/TLS settings).
+
 ## Run
 
 Start stack (helper scripts):
