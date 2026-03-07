@@ -13,6 +13,11 @@ PROJECT_ROOT = os.environ.get(
     "FRAUD_PROJECT_ROOT",
     str(Path(__file__).resolve().parents[2]),
 )
+ALERT_EMAILS = [
+    email.strip()
+    for email in os.environ.get("FRAUD_ALERT_EMAILS", "").split(",")
+    if email.strip()
+]
 
 
 def build_bash(command: str) -> str:
@@ -30,6 +35,9 @@ default_args = {
     "depends_on_past": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=15),
+    "email": ALERT_EMAILS,
+    "email_on_retry": bool(ALERT_EMAILS),
+    "email_on_failure": bool(ALERT_EMAILS),
 }
 
 
