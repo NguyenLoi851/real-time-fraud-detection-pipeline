@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import threading
+import time
 from pathlib import Path
 
 from pyspark.ml import Pipeline
@@ -18,6 +20,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-output", default="ml/artifacts/fraud_rf_pipeline", help="Output path for saved Spark PipelineModel")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--train-ratio", type=float, default=0.8, help="Train split ratio")
+    parser.add_argument("--max-rows", type=int, default=75000, help="Maximum rows to load for fast demo training (0 keeps all rows)")
+    parser.add_argument("--eval-rows", type=int, default=20000, help="Maximum rows used for validation AUC (0 keeps all rows)")
+    parser.add_argument("--num-trees", type=int, default=8, help="Number of trees in RandomForest (lower is faster)")
+    parser.add_argument("--max-depth", type=int, default=4, help="Max tree depth in RandomForest (lower is faster)")
+    parser.add_argument("--shuffle-partitions", type=int, default=8, help="Spark shuffle partitions for local demo runs")
     return parser.parse_args()
 
 
@@ -42,12 +49,34 @@ def prepare_features(df):
     return feature_df
 
 
+def timed_run(label: str, action):
+    stop_event = threading.Event()
+    start_time = time.perf_counter()
+
+    def _tick():
+        while not stop_event.wait(1):
+            elapsed = int(time.perf_counter() - start_time)
+            print(f"{label}... {elapsed}s", flush=True)
+
+    timer_thread = threading.Thread(target=_tick, daemon=True)
+    timer_thread.start()
+    try:
+        return action()
+    finally:
+        stop_event.set()
+        timer_thread.join(timeout=0.2)
+        total_seconds = int(time.perf_counter() - start_time)
+        print(f"{label} done in {total_seconds}s", flush=True)
+
+
 def main() -> None:
     args = parse_args()
 
     spark = (
         SparkSession.builder.appName("fraud-model-training")
         .master("local[*]")
+        .config("spark.sql.shuffle.partitions", str(args.shuffle_partitions))
+        .config("spark.default.parallelism", str(args.shuffle_partitions))
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -57,6 +86,9 @@ def main() -> None:
         raise FileNotFoundError(f"Input CSV not found: {input_path}")
 
     raw_df = spark.read.option("header", True).csv(str(input_path))
+    if args.max_rows > 0:
+        raw_df = raw_df.limit(args.max_rows)
+
     if "isFraud" not in raw_df.columns:
         raise ValueError("Input data must include 'isFraud' for supervised training")
 
@@ -87,15 +119,18 @@ def main() -> None:
         featuresCol="features",
         predictionCol="prediction",
         probabilityCol="probability",
-        numTrees=120,
-        maxDepth=8,
+        numTrees=args.num_trees,
+        maxDepth=args.max_depth,
         seed=args.seed,
     )
 
     pipeline = Pipeline(stages=[type_indexer, assembler, classifier])
-    model = pipeline.fit(train_df)
+    model = timed_run("Training model", lambda: pipeline.fit(train_df))
 
     predictions = model.transform(test_df)
+    if args.eval_rows > 0:
+        predictions = predictions.limit(args.eval_rows)
+
     evaluator = BinaryClassificationEvaluator(labelCol="isFraud", rawPredictionCol="rawPrediction", metricName="areaUnderROC")
     auc = evaluator.evaluate(predictions)
 
