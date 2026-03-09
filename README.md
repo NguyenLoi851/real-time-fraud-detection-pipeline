@@ -127,6 +127,13 @@ Recommended pattern: Spark writes curated parquet to GCS → Python load jobs in
 - Bagging across many trees improves generalization on noisy synthetic financial data and reduces overfitting risk compared with a single decision tree.
 - It provides feature importance signals, which helps validate whether the model is learning meaningful fraud drivers from this dataset.
 
+**For hourly batch outputs, should we use append mode or overwrite by hour partition?**
+
+- `append` mode is simpler, but rerunning the same hour can duplicate records and keep stale values, so storage and query costs grow over time.
+- Hourly partition overwrite (recommended) keeps historical hours, while replacing only the processed hour when re-running or backfilling.
+- This gives a cleaner “latest truth per hour” for curated, retraining, and monitoring outputs.
+- Use append only when data is strictly immutable and the same hour is never reprocessed.
+
 ## Future Plan (Backlog)
 
 - [x] Refactor and simplify root `README.md` to improve clarity and reduce long sections.
@@ -134,4 +141,3 @@ Recommended pattern: Spark writes curated parquet to GCS → Python load jobs in
 - [x] Add a project FAQ/Q&A section.
 - [x] Add one end-to-end runbook to execute the project from start to finish (local and optional GCP path).
 - [x] Add images/diagrams for end-to-end flow and major pipeline steps.
-- [ ] Check logic of fraud score threshold.

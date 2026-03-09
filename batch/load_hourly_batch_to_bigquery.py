@@ -56,8 +56,6 @@ def parse_args() -> argparse.Namespace:
 
 def normalize_gcs_uri(uri: str) -> str:
     value = uri.strip()
-    if value.startswith("gs:/") and not value.startswith("gs://"):
-        value = value.replace("gs:/", "gs://", 1)
     if not value.startswith("gs://"):
         raise ValueError(f"Invalid GCS URI: {uri}. Expected format gs://<bucket>/<path>")
     return value.rstrip("/")

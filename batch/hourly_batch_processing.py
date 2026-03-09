@@ -66,7 +66,11 @@ def validate_local_paths(args: argparse.Namespace) -> None:
 
 
 def build_spark(gcs_enabled: bool, gcs_credentials_file: str | None) -> SparkSession:
-    builder = SparkSession.builder.appName("fraud-hourly-batch").master("local[*]")
+    builder = (
+        SparkSession.builder.appName("fraud-hourly-batch")
+        .master("local[*]")
+        .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
+    )
 
     if gcs_enabled:
         builder = (
@@ -218,13 +222,16 @@ def main() -> None:
     training_df = build_training_dataset(reconciled_df)
     monitoring_df = build_hourly_monitoring(reconciled_df)
 
+    reconciled_output_df = reconciled_df.withColumn("event_hour_utc", F.date_trunc("hour", F.col("event_ts")))
+    training_output_df = training_df.withColumn("event_hour_utc", F.date_trunc("hour", F.col("event_ts")))
+
     curated_path = join_output_path(args.output_base, "curated_scored")
     training_path = join_output_path(args.output_base, "retraining_dataset")
     monitoring_path = join_output_path(args.output_base, "monitoring_hourly")
 
-    reconciled_df.write.mode("overwrite").parquet(curated_path)
-    training_df.write.mode("overwrite").parquet(training_path)
-    monitoring_df.write.mode("overwrite").parquet(monitoring_path)
+    reconciled_output_df.write.mode("overwrite").partitionBy("event_hour_utc").parquet(curated_path)
+    training_output_df.write.mode("overwrite").partitionBy("event_hour_utc").parquet(training_path)
+    monitoring_df.write.mode("overwrite").partitionBy("event_hour_utc").parquet(monitoring_path)
 
     print("Batch processing completed.")
     print(f"Input Silver path: {args.silver_path}")
