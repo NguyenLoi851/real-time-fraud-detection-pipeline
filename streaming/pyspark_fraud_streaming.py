@@ -1,4 +1,20 @@
 #!/usr/bin/env python3
+"""Real-time fraud scoring stream (Kafka -> PySpark -> Data Lake + Kafka alerts).
+
+What this job does:
+- Reads transaction events from a Kafka input topic as a Spark Structured Streaming source.
+- Parses JSON payloads, enforces schema, and engineers fraud features per micro-batch.
+- Loads a pre-trained Spark PipelineModel and scores each transaction with `fraud_score`.
+- Applies alert rules (model score, high transfer amount, and velocity in 5-minute buckets).
+- Writes raw, scored, and alert datasets to bronze/silver/gold parquet paths.
+- Publishes alert records to a Kafka alerts topic for downstream consumers.
+
+Operational behavior:
+- Runs in micro-batch mode with `--trigger-seconds` (default 10s), so data is processed every N seconds.
+- Uses `checkpointLocation` (`--checkpoint-dir`) to store stream progress/state for fault tolerance and restart recovery.
+- Supports local paths and GCS paths for model/checkpoints/data lake outputs.
+"""
+
 from __future__ import annotations
 
 import argparse
