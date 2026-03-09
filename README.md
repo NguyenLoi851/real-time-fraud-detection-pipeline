@@ -119,6 +119,14 @@ Recommended pattern: Spark writes curated parquet to GCS → Python load jobs in
 - Different group IDs read the same topic independently, so each downstream app can process all events.
 - Offsets are tracked per `group.id`, enabling independent replay/progress for each consumer application.
 
+**Why choose Random Forest for this project?**
+
+- Fraud data is usually non-linear and imbalanced; Random Forest handles non-linear feature interactions well without heavy feature engineering.
+- It is a strong fit for tabular transactional data like PaySim, where signals come from combinations of amount, balances, transaction type, and account behavior.
+- Decision trees inside the forest capture threshold-like fraud rules (for example, unusual amount patterns relative to account balances) without assuming linear relationships.
+- Bagging across many trees improves generalization on noisy synthetic financial data and reduces overfitting risk compared with a single decision tree.
+- It provides feature importance signals, which helps validate whether the model is learning meaningful fraud drivers from this dataset.
+
 ## Future Plan (Backlog)
 
 - [x] Refactor and simplify root `README.md` to improve clarity and reduce long sections.
