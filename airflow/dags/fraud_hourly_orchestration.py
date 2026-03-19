@@ -95,17 +95,25 @@ command -v dbt >/dev/null 2>&1 || {
         bash_command=build_bash(
             """
 "${FRAUD_SPARK_SUBMIT_BIN:-spark-submit}" \
+    --driver-memory "${FRAUD_SPARK_DRIVER_MEMORY:-4g}" \
+    --executor-memory "${FRAUD_SPARK_EXECUTOR_MEMORY:-4g}" \
+    --conf "spark.driver.maxResultSize=${FRAUD_SPARK_DRIVER_MAX_RESULT_SIZE:-1g}" \
+    --conf "spark.sql.shuffle.partitions=${FRAUD_HOURLY_BATCH_SHUFFLE_PARTITIONS:-8}" \
   --packages com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
   batch/hourly_batch_processing.py \
   --silver-path "${FRAUD_SILVER_PATH:-data/lake/silver/scored_transactions}" \
   --labels-csv "${FRAUD_LABELS_CSV:-data/transaction_log.csv}" \
   --output-base "${FRAUD_BATCH_OUTPUT_BASE}" \
-  --target-hour-utc "{{ data_interval_start.in_timezone('UTC').strftime('%Y-%m-%d-%H') }}"
+    --shuffle-partitions "${FRAUD_HOURLY_BATCH_SHUFFLE_PARTITIONS:-8}" \
 """
         ),
         env={
             "FRAUD_BATCH_OUTPUT_BASE": os.environ.get("FRAUD_BATCH_OUTPUT_BASE", "gs://REPLACE_GOLD_BUCKET/hourly_batch"),
             "FRAUD_SPARK_SUBMIT_BIN": os.environ.get("FRAUD_SPARK_SUBMIT_BIN", "/home/airflow/.local/bin/spark-submit"),
+            "FRAUD_SPARK_DRIVER_MEMORY": os.environ.get("FRAUD_SPARK_DRIVER_MEMORY", "4g"),
+            "FRAUD_SPARK_EXECUTOR_MEMORY": os.environ.get("FRAUD_SPARK_EXECUTOR_MEMORY", "4g"),
+            "FRAUD_SPARK_DRIVER_MAX_RESULT_SIZE": os.environ.get("FRAUD_SPARK_DRIVER_MAX_RESULT_SIZE", "1g"),
+            "FRAUD_HOURLY_BATCH_SHUFFLE_PARTITIONS": os.environ.get("FRAUD_HOURLY_BATCH_SHUFFLE_PARTITIONS", "8"),
             "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""),
         },
     )

@@ -130,6 +130,12 @@ source .venv/bin/activate
 # Run exports from step 6.1 in this terminal before spark-submit.
 
 spark-submit \
+   --driver-memory 4g \
+   --executor-memory 4g \
+   --conf spark.driver.maxResultSize=1g \
+   --conf spark.sql.shuffle.partitions=8 \
+   --conf spark.streaming.backpressure.enabled=true \
+   --conf spark.streaming.kafka.maxRatePerPartition=200 \
    --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1,com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
    streaming/pyspark_fraud_streaming.py \
    --bootstrap-servers localhost:9092 \
@@ -141,6 +147,9 @@ spark-submit \
    --datalake-raw-path gs://$FRAUD_BRONZE_BUCKET/raw/transactions_raw \
    --datalake-scored-path gs://$FRAUD_SILVER_BUCKET/scored_transactions \
    --datalake-alerts-path gs://$FRAUD_GOLD_BUCKET/fraud_alerts \
+   --trigger-seconds 10 \
+   --max-offset-per-trigger 1000000 \
+   --shuffle-partitions 8 \
    --fraud-score-threshold 0.80
 ```
 
@@ -214,11 +223,15 @@ source .venv/bin/activate
 # Run exports from step 6.1 in this terminal before spark-submit.
 
 spark-submit \
+   --driver-memory 4g \
+   --executor-memory 4g \
+   --conf spark.driver.maxResultSize=1g \
    --packages com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
    batch/hourly_batch_processing.py \
    --silver-path gs://$FRAUD_SILVER_BUCKET/scored_transactions \
    --labels-csv data/transaction_log.csv \
-   --output-base gs://$FRAUD_GOLD_BUCKET/hourly_batch
+   --output-base gs://$FRAUD_GOLD_BUCKET/hourly_batch \
+   --shuffle-partitions 4
 ```
 
 ### 11.2) Load Curated Outputs to BigQuery
