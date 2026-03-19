@@ -197,7 +197,7 @@ Wait for DAG completion, then continue to dashboard step.
 
 ## 10) Build Dashboard
 
-Open Looker Studio and connect table:
+Open Tableau and connect table:
 
 - `fraud_analytics.mart_fraud_hourly_kpis`
 

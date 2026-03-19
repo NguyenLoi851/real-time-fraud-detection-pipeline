@@ -27,7 +27,7 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 5. BigQuery load jobs ingest curated outputs.
 6. dbt builds warehouse models.
 7. Airflow orchestrates hourly warehouse refresh plus daily model retraining.
-8. Looker Studio visualizes KPI marts.
+8. Tableau visualizes KPI marts.
 
 ## Documentation Entry Points
 
