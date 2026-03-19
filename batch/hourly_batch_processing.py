@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+Goal: Process hourly Spark batch data for reconciliation and data warehouse.
+Joins scored transactions with historical labels, computes monitoring metrics,
+and outputs curated datasets for model retraining and performance monitoring.
+"""
 from __future__ import annotations
 
 import argparse

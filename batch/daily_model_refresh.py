@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+Goal: Train and refresh a RandomForest fraud detection model daily.
+Reads labeled transaction data from BigQuery or CSV sources,
+balances fraud/non-fraud classes with weighted training, and saves
+an updated PipelineModel artifact for serving.
+"""
 from __future__ import annotations
 
 import argparse

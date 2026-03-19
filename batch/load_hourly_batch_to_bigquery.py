@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+Goal: Load hourly batch Parquet outputs from GCS into BigQuery tables.
+Reads curated datasets produced by hourly batch processing and inserts/appends
+them into corresponding BigQuery tables in the fraud analytics dataset.
+"""
 from __future__ import annotations
 
 import argparse
