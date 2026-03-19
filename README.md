@@ -16,7 +16,7 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 
 ## Architecture (High Level)
 
-![Data Pipeline Diagram](images/data-pipeline.png)
+![Data Pipeline Architecture](images/data-pipeline-architecture.png)
 
 1. Simulator produces transaction events.
 2. Kafka ingests raw events on `transactions_raw`.
@@ -29,6 +29,10 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 7. Airflow orchestrates hourly warehouse refresh plus daily model retraining.
 8. Tableau visualizes KPI marts.
 
+## Visualization
+
+![Data Visualization](images/data-visualization.png)
+
 ## Documentation Entry Points
 
 - Documentation ownership map: [docs/documentation-map.md](docs/documentation-map.md)
@@ -36,6 +40,7 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 - End-to-end local runbook: [docs/runbook-local.md](docs/runbook-local.md)
 - End-to-end GCP runbook: [docs/runbook-gcp.md](docs/runbook-gcp.md)
 - Operations and troubleshooting: [docs/operations.md](docs/operations.md)
+- Tableau chart build guide: [docs/tableau-chart-instructions.md](docs/tableau-chart-instructions.md)
 
 ## Module Guides
 
