@@ -1,5 +1,5 @@
 select
-  cast(event_hour_utc as timestamp) as event_hour_utc,
+  cast(batch_hour_utc as timestamp) as event_hour_utc,
   cast(type as string) as transaction_type,
   cast(txn_count as int64) as transaction_count,
   cast(alert_count as int64) as alert_count,
