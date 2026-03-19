@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from typing import Iterable
 
+from google.api_core.exceptions import NotFound as ApiNotFound
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 
@@ -80,8 +81,13 @@ def ensure_dataset(client: bigquery.Client, project_id: str, dataset: str, creat
         print(f"[bq-load] Created dataset: {created.full_dataset_id}", flush=True)
 
 
-def build_source_uri(base_uri: str, table_name: str) -> str:
-    return f"{base_uri}/{table_name}/*.parquet"
+def build_source_uris(base_uri: str, table_name: str) -> list[str]:
+    table_base = f"{base_uri}/{table_name}"
+    return [
+        f"{table_base}/batch_hour_utc=*/*.parquet",
+        f"{table_base}/*/*.parquet",
+        f"{table_base}/*.parquet",
+    ]
 
 
 def load_table(
@@ -89,7 +95,7 @@ def load_table(
     project_id: str,
     dataset: str,
     table_name: str,
-    source_uri: str,
+    source_uris: list[str],
     write_disposition: str,
 ) -> None:
     table_id = f"{project_id}.{dataset}.{table_name}"
@@ -101,16 +107,29 @@ def load_table(
         autodetect=True,
     )
 
-    print(f"[bq-load] Loading {source_uri} -> {table_id}", flush=True)
-    job = client.load_table_from_uri(source_uri, table_id, job_config=job_config)
-    result = job.result()
+    last_not_found: Exception | None = None
+    for source_uri in source_uris:
+        print(f"[bq-load] Loading {source_uri} -> {table_id}", flush=True)
+        try:
+            job = client.load_table_from_uri(source_uri, table_id, job_config=job_config)
+            result = job.result()
 
-    destination_table = client.get_table(table_id)
-    print(
-        f"[bq-load] Completed {table_id}: rows={destination_table.num_rows}, "
-        f"state={result.state}",
-        flush=True,
-    )
+            destination_table = client.get_table(table_id)
+            print(
+                f"[bq-load] Completed {table_id}: rows={destination_table.num_rows}, "
+                f"state={result.state}",
+                flush=True,
+            )
+            return
+        except ApiNotFound as exc:
+            last_not_found = exc
+            print(f"[bq-load] No files matched: {source_uri}", flush=True)
+
+    searched = ", ".join(source_uris)
+    raise ValueError(
+        f"No parquet files found for table '{table_name}'. "
+        f"Checked URIs: {searched}"
+    ) from last_not_found
 
 
 def validate_tables(tables: Iterable[str]) -> list[str]:
@@ -143,13 +162,13 @@ def main() -> None:
     ensure_dataset(client, args.project_id, args.dataset, args.create_dataset_if_missing)
 
     for table_name in tables:
-        source_uri = build_source_uri(gcs_output_base, table_name)
+        source_uris = build_source_uris(gcs_output_base, table_name)
         load_table(
             client=client,
             project_id=args.project_id,
             dataset=args.dataset,
             table_name=table_name,
-            source_uri=source_uri,
+            source_uris=source_uris,
             write_disposition=args.write_disposition,
         )
 
