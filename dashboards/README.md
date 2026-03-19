@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Build and operate a Looker Studio dashboard from BigQuery warehouse outputs.
+Build and operate a Tableau dashboard from BigQuery warehouse outputs.
 
 ## Prerequisites
 
@@ -35,10 +35,10 @@ Use `event_hour_utc` as default time dimension.
 
 ## Build Steps
 
-1. Open https://lookerstudio.google.com/
-2. Create report and add BigQuery source `fraud_analytics.mart_fraud_hourly_kpis`.
+1. Open Tableau Desktop, Tableau Cloud, or Tableau Public.
+2. Connect to BigQuery and select `fraud_analytics.mart_fraud_hourly_kpis`.
 3. Add charts and filters listed above.
-4. Save report (example: `Fraud Monitoring - Hourly KPI Dashboard`).
+4. Save workbook/dashboard (example: `Fraud Monitoring - Hourly KPI Dashboard`).
 
 ## Freshness
 
