@@ -44,6 +44,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--high-amount-threshold", type=float, default=200000.0, help="Amount threshold for transfer/cash-out alert rule")
     parser.add_argument("--velocity-threshold", type=int, default=5, help="Minimum velocity_5min to trigger alert rule")
     parser.add_argument("--trigger-seconds", type=int, default=10, help="Micro-batch trigger interval")
+    parser.add_argument("--max-offset-per-trigger", type=int, default=1000, help="Max messages to process per micro-batch (limits batch size)")
+    parser.add_argument("--shuffle-partitions", type=int, default=8, help="Number of shuffle partitions for Spark operations")
     return parser.parse_args()
 
 
@@ -91,8 +93,19 @@ def engineer_features(df: DataFrame) -> DataFrame:
     return featured_df
 
 
-def build_spark(app_name: str, gcs_enabled: bool, gcs_credentials_file: str | None) -> SparkSession:
+def build_spark(
+    app_name: str,
+    gcs_enabled: bool,
+    gcs_credentials_file: str | None,
+    shuffle_partitions: int = 8,
+) -> SparkSession:
     builder = SparkSession.builder.appName(app_name).master("local[*]")
+
+    # Configure partition and memory settings for bounded batch processing
+    builder = (
+        builder.config("spark.sql.shuffle.partitions", str(shuffle_partitions))
+        .config("spark.streaming.backpressure.enabled", "true")
+    )
 
     if gcs_enabled:
         builder = (
@@ -116,6 +129,11 @@ def is_cloud_uri(path: str) -> bool:
 
 def main() -> None:
     args = parse_args()
+
+    if args.max_offset_per_trigger < 1:
+        raise ValueError("--max-offset-per-trigger must be >= 1")
+    if args.shuffle_partitions < 1:
+        raise ValueError("--shuffle-partitions must be >= 1")
 
     uses_gcs = any(
         is_cloud_uri(path)
@@ -143,6 +161,7 @@ def main() -> None:
         app_name="fraud-streaming-local-pyspark",
         gcs_enabled=uses_gcs,
         gcs_credentials_file=gcs_credentials_file or None,
+        shuffle_partitions=args.shuffle_partitions,
     )
     model = PipelineModel.load(args.model_path)
 
@@ -155,6 +174,7 @@ def main() -> None:
         .option("kafka.bootstrap.servers", args.bootstrap_servers)
         .option("subscribe", args.input_topic)
         .option("startingOffsets", args.starting_offsets)
+        .option("maxOffsetsPerTrigger", args.max_offset_per_trigger)
         .load()
     )
 
