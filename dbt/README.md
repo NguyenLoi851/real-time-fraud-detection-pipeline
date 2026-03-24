@@ -39,18 +39,31 @@ export GOOGLE_APPLICATION_CREDENTIALS="$PWD/infra/terraform/keys/terraform-sa-ke
 ## Run
 
 ```bash
-cd dbt
-dbt debug
-dbt deps
-dbt run
-dbt test
+cd dbt                  # Navigate into the dbt project directory
+
+dbt debug               # Validate your connection and profile configuration
+dbt deps                # Install dbt packages listed in packages.yml
+dbt run                 # Compile and execute all models in BigQuery
+dbt test                # Run schema and data quality tests on all models
 ```
 
 ## Useful Commands
 
 ```bash
+# Run only fact and mart models (skips dimensions)
 dbt run --select facts marts
+
+# Override the raw source dataset at runtime
 dbt run --vars '{raw_dataset: fraud_analytics}'
+```
+
+## Docs
+```bash
+# Generate static documentation site from your models and schema files
+dbt docs generate
+
+# Serve the documentation locally and open it in your browser (default: http://localhost:8080)
+dbt docs serve
 ```
 
 ## Troubleshooting
