@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import argparse
 import os
-from time import perf_counter
 from pathlib import Path
+from time import perf_counter
 
 from pyspark import StorageLevel
 from pyspark.ml import PipelineModel
@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--velocity-threshold", type=int, default=5, help="Minimum velocity_5min to trigger alert rule")
     parser.add_argument("--trigger-seconds", type=int, default=10, help="Micro-batch trigger interval")
     parser.add_argument("--max-offset-per-trigger", type=int, default=1000, help="Max messages to process per micro-batch (limits batch size)")
-    parser.add_argument("--shuffle-partitions", type=int, default=8, help="Number of shuffle partitions for Spark operations")
+    parser.add_argument("--shuffle-partitions", type=int, default=8, help="Minimum number of shuffle partitions for Spark operations")
     return parser.parse_args()
 
 
@@ -68,7 +68,7 @@ def build_schema() -> StructType:
     )
 
 
-def engineer_features(df: DataFrame) -> DataFrame:
+def engineer_features(df: DataFrame, shuffle_partitions: int) -> DataFrame:
     typed_df = (
         df.withColumn("step", F.coalesce(F.col("step").cast(IntegerType()), F.lit(0)))
         .withColumn("type", F.coalesce(F.col("type"), F.lit("UNKNOWN")))
@@ -82,13 +82,22 @@ def engineer_features(df: DataFrame) -> DataFrame:
         .withColumn("event_ts", F.coalesce(F.to_timestamp("event_emitted_at_utc"), F.current_timestamp()))
     )
 
-    with_time_bucket = typed_df.withColumn("time_bucket_5min", F.floor(F.unix_timestamp("event_ts") / F.lit(300)).cast("long"))
+    with_time_bucket = (
+        typed_df.withColumn("time_bucket_5min", F.floor(F.unix_timestamp("event_ts") / F.lit(300)).cast("long"))
+        .repartition(shuffle_partitions, "nameOrig")
+    )
 
     velocity_window = Window.partitionBy("nameOrig", "time_bucket_5min")
     featured_df = (
         with_time_bucket.withColumn("velocity_5min", F.count(F.lit(1)).over(velocity_window).cast(DoubleType()))
-        .withColumn("balance_change_ratio", F.when(F.col("oldbalanceOrg") > 0, F.col("amount") / F.col("oldbalanceOrg")).otherwise(F.lit(0.0)))
-        .withColumn("is_new_merchant", F.when((F.col("oldbalanceDest") == 0.0) & (F.col("newbalanceDest") == 0.0), F.lit(1.0)).otherwise(F.lit(0.0)))
+        .withColumn(
+            "balance_change_ratio",
+            F.when(F.col("oldbalanceOrg") > 0, F.col("amount") / F.col("oldbalanceOrg")).otherwise(F.lit(0.0)),
+        )
+        .withColumn(
+            "is_new_merchant",
+            F.when((F.col("oldbalanceDest") == 0.0) & (F.col("newbalanceDest") == 0.0), F.lit(1.0)).otherwise(F.lit(0.0)),
+        )
         .withColumn("origin_balance_delta", F.col("oldbalanceOrg") - F.col("newbalanceOrig"))
         .withColumn("dest_balance_delta", F.col("newbalanceDest") - F.col("oldbalanceDest"))
     )
@@ -103,7 +112,6 @@ def build_spark(
 ) -> SparkSession:
     builder = SparkSession.builder.appName(app_name).master("local[*]")
 
-    # Configure partition and memory settings for bounded batch processing
     builder = (
         builder.config("spark.sql.shuffle.partitions", str(shuffle_partitions))
         .config("spark.streaming.backpressure.enabled", "true")
@@ -136,7 +144,6 @@ def main() -> None:
         raise ValueError("--max-offset-per-trigger must be >= 1")
     if args.shuffle_partitions < 1:
         raise ValueError("--shuffle-partitions must be >= 1")
-
     uses_gcs = any(
         is_cloud_uri(path)
         for path in [args.model_path, args.checkpoint_dir, args.datalake_raw_path, args.datalake_scored_path, args.datalake_alerts_path]
@@ -149,11 +156,10 @@ def main() -> None:
             "Set it to your service account key JSON file path."
         )
 
-    if not is_cloud_uri(args.model_path):
-        if not Path(args.model_path).exists():
-            raise FileNotFoundError(
-                f"Pre-trained model not found: {args.model_path}. Train first with: spark-submit ml/train_fraud_model.py"
-            )
+    if not is_cloud_uri(args.model_path) and not Path(args.model_path).exists():
+        raise FileNotFoundError(
+            f"Pre-trained model not found: {args.model_path}. Train first with: spark-submit ml/train_fraud_model.py"
+        )
 
     for target_path in [args.checkpoint_dir, args.datalake_raw_path, args.datalake_scored_path, args.datalake_alerts_path]:
         if not is_cloud_uri(target_path):
@@ -165,6 +171,21 @@ def main() -> None:
         gcs_credentials_file=gcs_credentials_file or None,
         shuffle_partitions=args.shuffle_partitions,
     )
+
+    default_parallelism = max(1, spark.sparkContext.defaultParallelism)
+    effective_shuffle_partitions = max(args.shuffle_partitions, default_parallelism)
+    spark.conf.set("spark.sql.shuffle.partitions", str(effective_shuffle_partitions))
+
+    print(
+        (
+            "Spark tuning: "
+            f"default_parallelism={default_parallelism} "
+            f"configured_shuffle_partitions={args.shuffle_partitions} "
+            f"effective_shuffle_partitions={effective_shuffle_partitions}"
+        ),
+        flush=True,
+    )
+
     model = PipelineModel.load(args.model_path)
 
     kafka_options = {
@@ -195,6 +216,7 @@ def main() -> None:
 
     def process_batch(batch_df: DataFrame, batch_id: int) -> None:
         batch_start = perf_counter()
+        transform_plan_start = perf_counter()
 
         raw_write_cols = [
             "source_topic",
@@ -213,7 +235,8 @@ def main() -> None:
             "oldbalanceDest",
             "newbalanceDest",
         ]
-        featured_df = engineer_features(batch_df)
+
+        featured_df = engineer_features(batch_df, effective_shuffle_partitions)
         scored_df = model.transform(featured_df)
 
         scored_df = (
@@ -264,33 +287,53 @@ def main() -> None:
             "rule_high_velocity",
         ]
 
+        transform_plan_seconds = perf_counter() - transform_plan_start
+
         final_df = final_df.persist(StorageLevel.MEMORY_AND_DISK)
+        alerts_df: DataFrame | None = None
         try:
-            alerts_df = final_df.filter(F.col("is_alert"))
+            alerts_df = final_df.filter(F.col("is_alert")).persist(StorageLevel.MEMORY_AND_DISK)
 
             alerts_kafka_df = alerts_df.select(
                 F.col("nameOrig").cast("string").alias("key"),
                 F.to_json(F.struct(*[F.col(c) for c in write_cols])).alias("value"),
             )
-            alerts_kafka_df.write.format("kafka").options(**kafka_options).option("topic", args.alerts_topic).save()
 
+            alerts_kafka_df.write.format("kafka").options(**kafka_options).option("topic", args.alerts_topic).save()
+            time_to_kafka_alert_seconds = perf_counter() - batch_start
+
+            raw_write_start = perf_counter()
             final_df.select(*raw_write_cols).write.mode("append").parquet(args.datalake_raw_path)
+            raw_write_seconds = perf_counter() - raw_write_start
+
+            scored_write_start = perf_counter()
             final_df.select(*write_cols).write.mode("append").parquet(args.datalake_scored_path)
+            scored_write_seconds = perf_counter() - scored_write_start
+
+            alerts_write_start = perf_counter()
             alerts_df.select(*write_cols).write.mode("append").parquet(args.datalake_alerts_path)
+            alerts_write_seconds = perf_counter() - alerts_write_start
 
             batch_duration_seconds = perf_counter() - batch_start
             print(
                 (
-                    f"Batch {batch_id}: writes completed "
+                    f"Batch {batch_id}: timings "
+                    f"transform_plan_seconds={transform_plan_seconds:.2f} "
+                    f"time_to_kafka_alert_seconds={time_to_kafka_alert_seconds:.2f} "
+                    f"raw_write_seconds={raw_write_seconds:.2f} "
+                    f"scored_write_seconds={scored_write_seconds:.2f} "
+                    f"alerts_write_seconds={alerts_write_seconds:.2f} "
+                    f"total_batch_seconds={batch_duration_seconds:.2f} "
                     f"raw={args.datalake_raw_path} "
                     f"scored={args.datalake_scored_path} "
                     f"alerts={args.datalake_alerts_path} "
-                    f"kafka_topic={args.alerts_topic} "
-                    f"duration_seconds={batch_duration_seconds:.2f}"
+                    f"kafka_topic={args.alerts_topic}"
                 ),
                 flush=True,
             )
         finally:
+            if alerts_df is not None:
+                alerts_df.unpersist()
             final_df.unpersist()
 
     query = (
