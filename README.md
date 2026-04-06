@@ -42,6 +42,40 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 - Operations and troubleshooting: [docs/operations.md](docs/operations.md)
 - Tableau chart build guide: [docs/tableau-chart-instructions.md](docs/tableau-chart-instructions.md)
 
+## Choose Runtime Version
+
+This repository supports two usage paths through version selection:
+
+- Legacy local/hybrid runtime (Kafka/Spark local + optional GCP services): use the `v1-onprem` tag.
+- Cloud-native runtime on GCP: use the main branch.
+
+How to select mode:
+
+1. Fetch latest refs:
+
+```bash
+git fetch --all --tags
+```
+
+2. Run local/ hybrid version (example):
+
+```bash
+git checkout tags/v1-onprem -b v1-onprem
+```
+
+3. Run cloud-native version:
+
+```bash
+git checkout main
+git pull
+```
+
+After selecting a version, use:
+
+- For local: use [docs/runbook-local.md](docs/runbook-local.md).
+- For hybrid: use [docs/runbook-hybrid.md](docs/runbook-hybrid.md).
+- For cloud-native: use [docs/runbook-gcp.md](docs/runbook-gcp.md).
+
 ## Module Guides
 
 - Data and schema notes: [data/README.md](data/README.md)
@@ -59,11 +93,17 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 2. Prepare dataset in [data/README.md](data/README.md).
 3. Execute [docs/runbook-local.md](docs/runbook-local.md).
 
-## Quick Start (GCP)
+## Quick Start (Hybrid)
+
+1. Complete setup in [docs/prerequisites.md](docs/prerequisites.md).
+2. Prepare dataset in [data/README.md](data/README.md).
+3. Execute [docs/runbook-hybrid.md](docs/runbook-hybrid.md).
+
+## Quick Start (cloud-native)
 
 1. Complete setup in [docs/prerequisites.md](docs/prerequisites.md).
 2. Provision foundation with [infra/terraform/README.md](infra/terraform/README.md).
-3. Execute [docs/runbook-gcp.md](docs/runbook-gcp.md).
+3. Execute [docs/runbook-native.md](docs/runbook-native.md).
 
 ## Documentation Rules
 
