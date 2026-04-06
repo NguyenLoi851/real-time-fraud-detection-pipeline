@@ -1,0 +1,242 @@
+# Cloud Migration Plan (Cloud-Native Target on GCP)
+
+This document defines how to evolve this repository into a cloud-native implementation on GCP.
+
+Scope of this plan:
+
+- The new implementation targets cloud runtime only.
+- Legacy local/Docker behavior is preserved as a separate version line (tag/branch), not as an active compatibility target in this plan.
+
+---
+
+## 1) Current vs Target Mapping
+
+| Current Component | Current Runtime | GCP Alternative | Notes |
+|---|---|---|---|
+| Event bus | Kafka (Docker) | Pub/Sub | Replace topic semantics + consumer groups with subscription model |
+| Stream scoring | Local Spark Structured Streaming | Dataproc Serverless Spark (or Dataflow in future) | Keep PySpark logic first, change source/sink adapters |
+| Batch reconciliation | Spark batch local/Docker | Dataproc Serverless batch | Reuse current Spark jobs with cloud packaging |
+| Orchestration | Airflow in Docker | Cloud Composer | Migrate DAGs with minimal behavior change |
+| Warehouse transform | dbt BigQuery | Dataform (BigQuery-native) | Run both in transition; eventually pick one primary |
+| Alerts consumer | Python Kafka consumer | Cloud Run (Pub/Sub push/pull) | Stateless email/webhook worker |
+| Data lake storage | Local filesystem + GCS | GCS | Bronze/Silver/Gold remains valid |
+| Serving warehouse | BigQuery | BigQuery | No change |
+
+---
+
+## 2) Migration Principles
+
+1. Optimize for cloud-native reliability and operations.
+2. Use adapter boundaries, not large rewrites.
+3. Keep table contracts stable (curated/retraining/monitoring outputs).
+4. Separate legacy local runtime by versioning strategy (tag/branch), not runtime switches.
+5. Validate parity against baseline outputs at each phase (record counts, schema, KPI deltas, alert volume).
+
+---
+
+## 3) Release and Versioning Strategy
+
+Recommended production-friendly approach:
+
+1. Keep current local implementation in a frozen legacy line:
+   - Tag example: `v1.0-local-legacy`
+   - Optional maintenance branch: `release/local-legacy`
+2. Build cloud-native implementation on active development line:
+   - Branch example: `main` (or `develop/cloud-native` then merge to `main`)
+3. Use release tags for cloud milestones:
+   - `v2.0-cloud-foundation`
+   - `v2.1-composer-dataproc`
+   - `v2.2-dataform` (if adopted)
+
+Why this is standard:
+
+- Clear separation of support policies.
+- No runtime branching complexity in production code.
+- Easier rollback and release notes.
+
+---
+
+## 4) Recommended Repository Strategy
+
+Keep existing directories, add cloud service adapters and deployment packaging.
+
+Proposed additions:
+
+- `config/profiles/gcp.env`
+- `streaming/adapters/`:
+  - `pubsub_io.py` (new)
+- `consumers/`:
+  - add `alert_pubsub_consumer.py` for GCP mode
+- `orchestration/`:
+  - add Composer-ready DAG package and deployment notes
+- `warehouse/` (docs + config only at first):
+  - `dbt` remains transitional source of truth initially
+  - add `dataform/` when conversion starts
+
+Why this structure works:
+
+- Contributors can migrate one module at a time.
+- CI can enforce cloud deployment checks directly.
+
+---
+
+## 5) Phased Implementation Plan
+
+## Phase 1: Messaging Migration (Kafka -> Pub/Sub) (3-5 days)
+
+Deliverables:
+
+- Add publisher path for transaction events to Pub/Sub topic.
+- Add subscriber worker for fraud alerts (Cloud Run friendly).
+- Remove Kafka dependency from the cloud code path.
+
+Implementation notes:
+
+- Use `google-cloud-pubsub` in cloud runtime.
+- Use a shared event envelope schema to keep downstream compatibility.
+
+Exit criteria:
+
+- End-to-end alert flow works on Pub/Sub + Cloud Run.
+
+## Phase 2: Spark Runtime Migration (local Spark -> Dataproc Serverless) (4-7 days)
+
+Deliverables:
+
+- Package current Spark jobs for Dataproc Serverless batch submissions:
+  - `streaming/pyspark_fraud_streaming.py` (micro-batch pattern)
+  - `batch/hourly_batch_processing.py`
+  - `batch/daily_model_refresh.py`
+- Move checkpoints and model artifacts to GCS in gcp-native mode.
+- Add run scripts under `scripts/gcp/dataproc/`.
+
+Implementation notes:
+
+- Preserve feature engineering and model scoring logic.
+- Isolate source/sink differences in adapter functions.
+- Ensure service account and IAM scopes are documented.
+
+Exit criteria:
+
+- Hourly and daily jobs execute on Dataproc Serverless and produce expected outputs in GCS/BigQuery.
+
+## Phase 3: Orchestration Migration (Docker Airflow -> Composer) (3-5 days)
+
+Deliverables:
+
+- Port current DAGs to Composer-compatible deployment:
+  - `airflow/dags/fraud_hourly_orchestration.py`
+  - `airflow/dags/fraud_daily_model_refresh.py`
+- Replace local path assumptions with GCS/Composer env variables.
+- Add Composer deployment script and operations runbook.
+
+Implementation notes:
+
+- Keep task order identical to reduce regression risk.
+- First run Composer DAGs against existing dbt path.
+
+Exit criteria:
+
+- Scheduled runs succeed in Composer for hourly and daily pipelines.
+
+## Phase 4: Warehouse Evolution (dbt + Dataform transition) (5-10 days)
+
+Deliverables:
+
+- Keep dbt as default transform engine initially.
+- Create equivalent Dataform project for a subset:
+  - dimensions
+  - one fact
+  - one mart
+- Compare outputs (row count + key metric parity).
+
+Decision gate:
+
+- Option A: keep dbt as primary and stop Dataform expansion.
+- Option B: migrate fully to Dataform and keep dbt as fallback until stable.
+
+Exit criteria:
+
+- Documented recommendation with benchmark and ops trade-offs.
+
+## Phase 5: Documentation and Contributor Experience (2-3 days)
+
+Deliverables:
+
+- Add clear mode selector in root documentation.
+- Add cloud-native quickstart and deployment checklist.
+- Add legacy version selection note (tag/branch strategy).
+- Add troubleshooting for cloud runtime only in the new version line.
+- Add cost notes for managed services.
+
+Exit criteria:
+
+- New contributor can deploy and run the cloud-native pipeline from docs only.
+
+---
+
+## 6) Configuration Model (Single Source of Runtime Truth)
+
+Use standardized env variables across modules:
+
+- `PIPELINE_MODE=gcp-native`
+- `MESSAGE_BACKEND=pubsub`
+- `ORCHESTRATOR_BACKEND=composer`
+- `SPARK_BACKEND=dataproc-serverless`
+- `TRANSFORM_BACKEND=dbt|dataform`
+
+Guideline:
+
+- Runtime selection must happen in wrapper scripts and DAG params.
+
+---
+
+## 7) Testing and Parity Plan
+
+Minimum validation suite per phase:
+
+1. Contract tests (schema + required columns).
+2. Data parity checks for one fixed hourly window.
+3. DAG task success checks with expected artifacts present.
+4. dbt/Dataform model quality checks (or equivalent assertions).
+
+Recommended acceptance thresholds:
+
+- Row-count delta per hourly table: <= 0.5%
+- KPI delta on fraud rate: <= 1% relative difference
+- Zero missing required columns
+
+---
+
+## 8) Risks and Mitigations
+
+1. Messaging semantics drift (Kafka groups vs Pub/Sub subscriptions).
+   Mitigation: explicit subscription strategy per consumer role.
+2. Spark connector/runtime differences in cloud.
+   Mitigation: lock connector versions and add smoke tests on Dataproc.
+3. Dual-transform maintenance overhead (dbt + Dataform).
+   Mitigation: time-box coexistence and define decision gate in Phase 4.
+4. Cost increase from always-on managed services.
+   Mitigation: start with scheduled/serverless jobs and budget alerts.
+
+---
+
+## 9) First Build Backlog (Implementation Order)
+
+1. Add GCP config profile and runtime variables.
+2. Add Pub/Sub producer and alert consumer path.
+3. Add Dataproc submission scripts for hourly/daily jobs.
+4. Add Composer environment + DAG deployment path.
+5. Add Dataform skeleton and first model parity checks.
+6. Publish cloud-native quickstart and legacy-version selection note.
+
+---
+
+## 10) Definition of Done (Cloud Track)
+
+Cloud track is complete when:
+
+- A contributor can deploy and run cloud-native mode on GCP with documented setup.
+- Hourly and daily orchestration run in Composer.
+- Data lake and warehouse outputs pass parity checks.
+- Documentation clearly explains cloud deployment and legacy version access.
