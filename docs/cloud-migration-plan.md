@@ -18,7 +18,7 @@ Scope of this plan:
 | Batch reconciliation | Spark batch local/Docker | Dataproc Serverless batch | Reuse current Spark jobs with cloud packaging |
 | Orchestration | Airflow in Docker | Cloud Composer | Migrate DAGs with minimal behavior change |
 | Warehouse transform | dbt BigQuery | Dataform (BigQuery-native) | Run both in transition; eventually pick one primary |
-| Alerts consumer | Python Kafka consumer | Cloud Run (Pub/Sub push/pull) | Stateless email/webhook worker |
+| Alerts consumer | Python Kafka consumer | Local Pub/Sub pull worker | Stateless email/webhook worker |
 | Data lake storage | Local filesystem + GCS | GCS | Bronze/Silver/Gold remains valid |
 | Serving warehouse | BigQuery | BigQuery | No change |
 
@@ -62,7 +62,6 @@ Keep existing directories, add cloud service adapters and deployment packaging.
 
 Proposed additions:
 
-- `config/profiles/gcp.env`
 - `streaming/adapters/`:
   - `pubsub_io.py` (new)
 - `consumers/`:
@@ -87,7 +86,7 @@ Why this structure works:
 Deliverables:
 
 - Add publisher path for transaction events to Pub/Sub topic.
-- Add subscriber worker for fraud alerts (Cloud Run friendly).
+- Add subscriber worker for fraud alerts (local Pub/Sub pull).
 - Remove Kafka dependency from the cloud code path.
 
 Implementation notes:
@@ -97,7 +96,7 @@ Implementation notes:
 
 Exit criteria:
 
-- End-to-end alert flow works on Pub/Sub + Cloud Run.
+- End-to-end alert flow works on Pub/Sub + local pull worker.
 
 ## Phase 2: Spark Runtime Migration (local Spark -> Dataproc Serverless) (4-7 days)
 
@@ -240,3 +239,209 @@ Cloud track is complete when:
 - Hourly and daily orchestration run in Composer.
 - Data lake and warehouse outputs pass parity checks.
 - Documentation clearly explains cloud deployment and legacy version access.
+
+---
+
+## 11) Phase 1 Implementation (Completed in Repository)
+
+Phase 1 has been implemented with the following repository additions:
+
+- Pub/Sub event envelope adapter:
+  - `streaming/adapters/pubsub_io.py`
+- Pub/Sub transaction publisher:
+  - `simulator/pubsub/pubsub_csv_publisher.py`
+- Local Pub/Sub pull alert consumer (email/webhook delivery):
+  - `consumers/alert_pubsub_consumer.py`
+
+Behavior notes:
+
+- The cloud code path now supports Pub/Sub messaging without Kafka dependencies.
+- Event payloads use a shared envelope shape:
+  - `schema_version`
+  - `event_id`
+  - `event_type`
+  - `source`
+  - `emitted_at_utc`
+  - `payload`
+
+---
+
+## 12) Detailed GCP Setup and Operations Guide for Phase 1 (Pub/Sub + Local Alert Worker)
+
+This section is the step-by-step operator guide for setting up, testing, and troubleshooting Phase 1 messaging services on GCP with a local alert consumer.
+
+### 12.1 Prerequisites
+
+1. Local tools:
+   - `gcloud` CLI installed and authenticated.
+   - Python 3.11+ and project dependencies installed.
+2. Permissions on target GCP project:
+   - Project IAM admin-level role (or equivalent granular roles) for initial setup.
+3. Required APIs enabled:
+   - `pubsub.googleapis.com`
+
+### 12.2 Set Working Environment Variables
+
+Set once per shell session:
+
+```bash
+export GCP_PROJECT_ID="<your-project-id>"
+export GCP_REGION="us-central1"
+export PUBSUB_TRANSACTIONS_TOPIC="transactions_raw"
+export PUBSUB_FRAUD_ALERTS_TOPIC="fraud_alerts"
+export TRANSACTIONS_PULL_SUBSCRIPTION="transactions-raw-pull-sub"
+export ALERT_PULL_SUBSCRIPTION="fraud-alerts-pull-sub"
+```
+
+Initialize gcloud context:
+
+```bash
+gcloud config set project "$GCP_PROJECT_ID"
+```
+
+### 12.3 Enable Required GCP Services
+
+```bash
+gcloud services enable pubsub.googleapis.com
+```
+
+### 12.4 Create Pub/Sub Topics and Subscription
+
+```bash
+gcloud pubsub topics create "$PUBSUB_TRANSACTIONS_TOPIC"
+gcloud pubsub subscriptions create "$TRANSACTIONS_PULL_SUBSCRIPTION" \
+  --topic="$PUBSUB_TRANSACTIONS_TOPIC"
+
+gcloud pubsub topics create "$PUBSUB_FRAUD_ALERTS_TOPIC"
+gcloud pubsub subscriptions create "$ALERT_PULL_SUBSCRIPTION" \
+  --topic="$PUBSUB_FRAUD_ALERTS_TOPIC"
+```
+
+Optional inspection:
+
+```bash
+gcloud pubsub topics list
+gcloud pubsub subscriptions describe "$ALERT_PULL_SUBSCRIPTION"
+```
+
+### 12.4.1 Grant IAM Roles to the Runtime Identity
+
+If the local consumer uses a service account key from `GOOGLE_APPLICATION_CREDENTIALS`, grant Pub/Sub roles to that service account.
+
+Set variables:
+
+```bash
+export SA_EMAIL="<service-account-email-in-credential-file>"
+```
+
+Grant subscriber role for local pull consumer:
+
+```bash
+gcloud pubsub subscriptions add-iam-policy-binding "$ALERT_PULL_SUBSCRIPTION" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.subscriber"
+```
+
+If the same identity publishes test alerts, grant publisher role:
+
+```bash
+gcloud pubsub topics add-iam-policy-binding "$PUBSUB_FRAUD_ALERTS_TOPIC" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.publisher"
+```
+
+If the same identity creates/deletes topics or subscriptions, grant editor role:
+
+```bash
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.editor"
+```
+
+### 12.5 Run Local Alert Consumer
+
+```bash
+python3 consumers/alert_pubsub_consumer.py \
+  --pubsub-project-id "$GCP_PROJECT_ID" \
+  --pubsub-subscription "$ALERT_PULL_SUBSCRIPTION" \
+  --delivery-mode email \
+  --email-use-tls
+```
+
+### 12.5.1 Part 3 Check: Ensure Subscriber Role on Pull Subscription
+
+Before publishing test traffic, ensure the runtime identity has all required Pub/Sub permissions:
+
+```bash
+gcloud pubsub topics add-iam-policy-binding "$PUBSUB_TRANSACTIONS_TOPIC" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.publisher"
+
+gcloud pubsub topics add-iam-policy-binding "$PUBSUB_FRAUD_ALERTS_TOPIC" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.publisher"
+
+gcloud pubsub subscriptions add-iam-policy-binding "$ALERT_PULL_SUBSCRIPTION" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.subscriber"
+```
+
+### 12.6 Publish Transaction Events to Pub/Sub
+
+Use the new publisher:
+
+```bash
+python3 simulator/pubsub/pubsub_csv_publisher.py \
+  --input data/transaction_log.csv \
+  --project-id "$GCP_PROJECT_ID" \
+  --topic "$PUBSUB_TRANSACTIONS_TOPIC" \
+  --interval-min 0.1 \
+  --interval-max 0.4 \
+  --max-events 100
+```
+
+At this phase, this validates transaction publish path.
+
+### 12.7 Publish Fraud Alert Test Events
+
+Example one-off alert publish command:
+
+```bash
+gcloud pubsub topics publish "$PUBSUB_FRAUD_ALERTS_TOPIC" \
+  --message='{"schema_version":"1.0","event_id":"manual-test-1","event_type":"fraud.alert","source":"manual.test","emitted_at_utc":"2026-01-01T00:00:00Z","payload":{"type":"TRANSFER","nameOrig":"C_TEST","nameDest":"C_DEST","amount":99999.99,"fraud_score":0.99,"predicted_is_fraud":true,"is_alert":true,"event_ts":"2026-01-01T00:00:00Z"}}' \
+  --attribute=event_type=fraud.alert,source=manual.test,event_id=manual-test-1
+```
+
+Expected result:
+
+- Local consumer receives the message from `$ALERT_PULL_SUBSCRIPTION`.
+- Terminal logs show processed alert.
+- Email or webhook is delivered based on `ALERT_DELIVERY_MODE`.
+
+### 12.8 Operational Tips
+
+1. Configure Pub/Sub dead-letter topics for production-grade error isolation.
+2. Add idempotency key handling using `event_id` in downstream notification processing.
+3. Use Secret Manager for SMTP credentials in production (avoid plain env vars).
+
+### 12.9 Common Failure Cases and Fixes
+
+1. Email send failure:
+   - Validate SMTP host/port/TLS and account app-password requirements.
+2. No message delivery observed:
+   - Check topic/subscription names and confirm the local consumer is running.
+3. Messages keep reappearing:
+   - Review `ALERT_PULL_ACK_ON_ERROR` and investigate processing errors in terminal logs.
+
+### 12.10 Cleanup Commands (Optional)
+
+```bash
+gcloud pubsub subscriptions delete "$ALERT_PULL_SUBSCRIPTION"
+gcloud pubsub topics delete "$PUBSUB_FRAUD_ALERTS_TOPIC"
+gcloud pubsub topics delete "$PUBSUB_TRANSACTIONS_TOPIC"
+```
