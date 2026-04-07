@@ -1656,12 +1656,12 @@ List DAG runs:
 gcloud composer environments run "${COMPOSER_ENV_NAME}" \
   --location "${COMPOSER_REGION}" \
   --project "${COMPOSER_PROJECT_ID}" \
-  dags list-runs -- fraud_hourly_batch_and_warehouse
+  dags list-runs -- --dag-id fraud_hourly_batch_and_warehouse
 
 gcloud composer environments run "${COMPOSER_ENV_NAME}" \
   --location "${COMPOSER_REGION}" \
   --project "${COMPOSER_PROJECT_ID}" \
-  dags list-runs -- fraud_daily_model_refresh
+  dags list-runs -- --dag-id fraud_daily_model_refresh
 ```
 
 ### 16.10 Phase 4 Troubleshooting Checklist

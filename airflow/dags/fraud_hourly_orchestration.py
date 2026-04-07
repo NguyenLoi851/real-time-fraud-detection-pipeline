@@ -126,7 +126,7 @@ with DAG(
         task_id="run_hourly_batch",
         project_id=PROJECT_ID,
         region=REGION,
-        batch_id="fraud-hourly-batch-{{ ts_nodash }}",
+        batch_id="fraud-hourly-batch-{{ ts_nodash | lower }}",
         batch=build_dataproc_batch_config(
             HOURLY_BATCH_PY_URI,
             [
@@ -151,7 +151,7 @@ with DAG(
         task_id="wait_hourly_batch",
         project_id=PROJECT_ID,
         region=REGION,
-        batch_id="fraud-hourly-batch-{{ ts_nodash }}",
+        batch_id="fraud-hourly-batch-{{ ts_nodash | lower }}",
         gcp_conn_id="google_cloud_default",
         timeout=60 * 75,
         poke_interval=60,
@@ -161,7 +161,7 @@ with DAG(
         task_id="load_batch_to_bigquery",
         project_id=PROJECT_ID,
         region=REGION,
-        batch_id="fraud-hourly-bq-load-{{ ts_nodash }}",
+        batch_id="fraud-hourly-bq-load-{{ ts_nodash | lower }}",
         batch=build_dataproc_batch_config(
             HOURLY_BQ_LOAD_PY_URI,
             [
@@ -189,7 +189,7 @@ with DAG(
         task_id="wait_bq_load",
         project_id=PROJECT_ID,
         region=REGION,
-        batch_id="fraud-hourly-bq-load-{{ ts_nodash }}",
+        batch_id="fraud-hourly-bq-load-{{ ts_nodash | lower }}",
         gcp_conn_id="google_cloud_default",
         timeout=60 * 35,
         poke_interval=60,

@@ -107,7 +107,7 @@ with DAG(
         task_id="run_daily_model_refresh",
         project_id=PROJECT_ID,
         region=REGION,
-        batch_id="fraud-daily-model-refresh-{{ ts_nodash }}",
+        batch_id="fraud-daily-model-refresh-{{ ts_nodash | lower }}",
         batch=build_dataproc_batch_config(
             DAILY_REFRESH_PY_URI,
             [
@@ -134,7 +134,7 @@ with DAG(
         task_id="wait_daily_model_refresh",
         project_id=PROJECT_ID,
         region=REGION,
-        batch_id="fraud-daily-model-refresh-{{ ts_nodash }}",
+        batch_id="fraud-daily-model-refresh-{{ ts_nodash | lower }}",
         gcp_conn_id="google_cloud_default",
         timeout=60 * 90,
         poke_interval=60,
