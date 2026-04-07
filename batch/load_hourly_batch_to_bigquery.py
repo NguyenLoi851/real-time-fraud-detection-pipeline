@@ -9,9 +9,19 @@ from __future__ import annotations
 import argparse
 from typing import Iterable
 
-from google.api_core.exceptions import NotFound as ApiNotFound
-from google.cloud import bigquery
-from google.cloud.exceptions import NotFound
+try:
+    from google.api_core.exceptions import NotFound as ApiNotFound
+    from google.cloud import bigquery
+    from google.cloud.exceptions import NotFound
+except ImportError:  # Optional in Dataproc Spark runtime.
+    ApiNotFound = Exception
+    bigquery = None
+    NotFound = Exception
+
+try:
+    from pyspark.sql import SparkSession
+except ImportError:  # Optional for local BigQuery client mode.
+    SparkSession = None
 
 
 DEFAULT_TABLES = [
@@ -29,6 +39,12 @@ def parse_args() -> argparse.Namespace:
         "--project-id",
         required=True,
         help="BigQuery project id",
+    )
+    parser.add_argument(
+        "--runtime-mode",
+        default="local",
+        choices=["local", "gcp-native"],
+        help="Execution mode: local BigQuery client or Dataproc Spark connector",
     )
     parser.add_argument(
         "--dataset",
@@ -57,6 +73,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Create BigQuery dataset if it does not exist",
     )
+    parser.add_argument(
+        "--temporary-gcs-bucket",
+        default="",
+        help="Optional temporary GCS bucket for Spark BigQuery connector writes",
+    )
     return parser.parse_args()
 
 
@@ -67,7 +88,7 @@ def normalize_gcs_uri(uri: str) -> str:
     return value.rstrip("/")
 
 
-def ensure_dataset(client: bigquery.Client, project_id: str, dataset: str, create_if_missing: bool) -> None:
+def ensure_dataset_local(client: "bigquery.Client", project_id: str, dataset: str, create_if_missing: bool) -> None:
     dataset_ref = f"{project_id}.{dataset}"
     try:
         client.get_dataset(dataset_ref)
@@ -91,7 +112,7 @@ def build_source_uris(base_uri: str, table_name: str) -> list[str]:
 
 
 def load_table(
-    client: bigquery.Client,
+    client: "bigquery.Client",
     project_id: str,
     dataset: str,
     table_name: str,
@@ -132,6 +153,57 @@ def load_table(
     ) from last_not_found
 
 
+def load_table_with_spark(
+    spark: "SparkSession",
+    project_id: str,
+    dataset: str,
+    table_name: str,
+    source_uris: list[str],
+    write_disposition: str,
+    temporary_gcs_bucket: str,
+) -> None:
+    table_id = f"{project_id}.{dataset}.{table_name}"
+    write_mode_map = {
+        "WRITE_TRUNCATE": "overwrite",
+        "WRITE_APPEND": "append",
+        "WRITE_EMPTY": "errorifexists",
+    }
+    spark_mode = write_mode_map[write_disposition]
+
+    last_error: Exception | None = None
+    df = None
+    for source_uri in source_uris:
+        print(f"[bq-load] Reading parquet from {source_uri}", flush=True)
+        try:
+            df = spark.read.parquet(source_uri)
+            break
+        except Exception as exc:
+            last_error = exc
+            print(f"[bq-load] No readable parquet at {source_uri}", flush=True)
+
+    if df is None:
+        searched = ", ".join(source_uris)
+        raise ValueError(
+            f"No parquet files found for table '{table_name}'. Checked URIs: {searched}"
+        ) from last_error
+
+    writer = (
+        df.write.format("bigquery")
+        .mode(spark_mode)
+        .option("table", table_id)
+    )
+
+    if temporary_gcs_bucket:
+        writer = writer.option("temporaryGcsBucket", temporary_gcs_bucket)
+
+    print(
+        f"[bq-load] Writing Spark DataFrame -> {table_id} (mode={spark_mode})",
+        flush=True,
+    )
+    writer.save()
+    print(f"[bq-load] Completed Spark load for {table_id}", flush=True)
+
+
 def validate_tables(tables: Iterable[str]) -> list[str]:
     unique_tables: list[str] = []
     for table in tables:
@@ -153,24 +225,54 @@ def main() -> None:
 
     print("[bq-load] Starting load process...", flush=True)
     print(f"[bq-load] Project: {args.project_id}", flush=True)
+    print(f"[bq-load] Runtime mode: {args.runtime_mode}", flush=True)
     print(f"[bq-load] Dataset: {args.dataset}", flush=True)
     print(f"[bq-load] GCS base: {gcs_output_base}", flush=True)
     print(f"[bq-load] Tables: {', '.join(tables)}", flush=True)
     print(f"[bq-load] Write disposition: {args.write_disposition}", flush=True)
 
-    client = bigquery.Client(project=args.project_id)
-    ensure_dataset(client, args.project_id, args.dataset, args.create_dataset_if_missing)
+    if args.runtime_mode == "local":
+        if bigquery is None:
+            raise RuntimeError(
+                "google-cloud-bigquery is not installed. "
+                "Install dependencies or run with --runtime-mode gcp-native on Dataproc."
+            )
 
-    for table_name in tables:
-        source_uris = build_source_uris(gcs_output_base, table_name)
-        load_table(
-            client=client,
-            project_id=args.project_id,
-            dataset=args.dataset,
-            table_name=table_name,
-            source_uris=source_uris,
-            write_disposition=args.write_disposition,
-        )
+        client = bigquery.Client(project=args.project_id)
+        ensure_dataset_local(client, args.project_id, args.dataset, args.create_dataset_if_missing)
+
+        for table_name in tables:
+            source_uris = build_source_uris(gcs_output_base, table_name)
+            load_table(
+                client=client,
+                project_id=args.project_id,
+                dataset=args.dataset,
+                table_name=table_name,
+                source_uris=source_uris,
+                write_disposition=args.write_disposition,
+            )
+    else:
+        if SparkSession is None:
+            raise RuntimeError(
+                "PySpark is not available for gcp-native mode. "
+                "Use Dataproc Serverless with pyspark submit."
+            )
+
+        spark = SparkSession.builder.appName("hourly-bq-loader").getOrCreate()
+        try:
+            for table_name in tables:
+                source_uris = build_source_uris(gcs_output_base, table_name)
+                load_table_with_spark(
+                    spark=spark,
+                    project_id=args.project_id,
+                    dataset=args.dataset,
+                    table_name=table_name,
+                    source_uris=source_uris,
+                    write_disposition=args.write_disposition,
+                    temporary_gcs_bucket=args.temporary_gcs_bucket,
+                )
+        finally:
+            spark.stop()
 
     print("[bq-load] BigQuery load process completed.", flush=True)
 
