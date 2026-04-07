@@ -53,6 +53,23 @@ resource "google_storage_bucket" "gold" {
   })
 }
 
+resource "google_storage_bucket" "platform" {
+  name                        = "${local.base_bucket_name}-${var.platform_bucket_suffix}"
+  location                    = var.bucket_location
+  force_destroy               = var.force_destroy
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  versioning {
+    enabled = true
+  }
+
+  labels = merge(var.labels, {
+    environment = var.environment
+    zone        = "platform"
+  })
+}
+
 resource "google_bigquery_dataset" "fraud_analytics" {
   dataset_id                 = var.bq_dataset_id
   location                   = var.bq_location
