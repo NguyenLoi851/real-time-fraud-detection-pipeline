@@ -33,6 +33,12 @@ PARTITION_HOUR_COL = "batch_hour_utc"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Hourly Spark batch for reconciliation and warehouse-ready datasets")
     parser.add_argument(
+        "--runtime-mode",
+        choices=["local", "gcp-native"],
+        default=os.getenv("PIPELINE_MODE", "local"),
+        help="Runtime mode used to tune the Spark session for local execution or Dataproc Serverless",
+    )
+    parser.add_argument(
         "--silver-path",
         default="data/lake/silver/scored_transactions",
         help="Input Silver scored transactions path (parquet)",
@@ -78,11 +84,13 @@ def validate_local_paths(args: argparse.Namespace) -> None:
 
 
 
-def build_spark(gcs_enabled: bool, gcs_credentials_file: str | None, shuffle_partitions: int) -> SparkSession:
+def build_spark(gcs_enabled: bool, gcs_credentials_file: str | None, shuffle_partitions: int, runtime_mode: str) -> SparkSession:
+    builder = SparkSession.builder.appName("fraud-hourly-batch")
+    if runtime_mode == "local":
+        builder = builder.master("local[*]")
+
     builder = (
-        SparkSession.builder.appName("fraud-hourly-batch")
-        .master("local[*]")
-        .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
+        builder.config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .config("spark.sql.shuffle.partitions", str(shuffle_partitions))
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.sql.adaptive.enabled", "true")
@@ -118,12 +126,11 @@ def join_output_path(base_path: str, child: str) -> str:
 def ensure_gcs_credentials(paths: list[str]) -> str | None:
     uses_gcs = any(is_cloud_uri(path) for path in paths)
     gcs_credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if uses_gcs and not gcs_credentials_file:
-        raise ValueError(
-            "GCS paths detected but GOOGLE_APPLICATION_CREDENTIALS is not set. "
-            "Set it to your service account key JSON file path."
-        )
-    return gcs_credentials_file or None
+    if uses_gcs and gcs_credentials_file:
+        return gcs_credentials_file
+    if uses_gcs:
+        return None
+    return None
 
 
 def deduplicate_scored(scored_df: DataFrame) -> DataFrame:
@@ -215,6 +222,7 @@ def main() -> None:
         gcs_enabled=any(is_cloud_uri(path) for path in [args.silver_path, args.labels_csv, args.output_base]),
         gcs_credentials_file=gcs_credentials_file,
         shuffle_partitions=args.shuffle_partitions,
+        runtime_mode=args.runtime_mode,
     )
 
     scored_df = spark.read.parquet(args.silver_path)
