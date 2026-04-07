@@ -38,6 +38,12 @@ variable "gcs_bucket_prefix" {
   default     = "fraud-datalake"
 }
 
+variable "platform_bucket_suffix" {
+  type        = string
+  description = "Suffix used to create a single cloud-native bucket for scripts that expect one bucket root."
+  default     = "platform"
+}
+
 variable "bq_dataset_id" {
   type        = string
   description = "BigQuery dataset ID for analytics tables."
