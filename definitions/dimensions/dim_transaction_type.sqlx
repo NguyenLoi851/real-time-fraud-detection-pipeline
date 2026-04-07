@@ -1,0 +1,22 @@
+config {
+  type: "table",
+  schema: "fraud_analytics_df",
+  name: "dim_transaction_type",
+  tags: ["fraud-main", "dimensions"],
+  assertions: {
+    uniqueKey: ["transaction_type_key"],
+    nonNull: ["transaction_type_key", "transaction_type"]
+  }
+}
+
+with base as (
+  select distinct
+    transaction_type
+  from ${ref("stg_curated_scored")}
+  where transaction_type is not null
+)
+
+select
+  to_hex(md5(transaction_type)) as transaction_type_key,
+  transaction_type
+from base

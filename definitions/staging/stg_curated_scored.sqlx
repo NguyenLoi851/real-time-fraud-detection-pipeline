@@ -1,0 +1,39 @@
+js {
+  const { toBool } = require("../../includes/sql_utils");
+}
+
+config {
+  type: "view",
+  schema: "fraud_analytics_df",
+  name: "stg_curated_scored",
+  tags: ["fraud-main", "staging"]
+}
+
+select
+  cast(step as int64) as step,
+  cast(type as string) as transaction_type,
+  cast(amount as numeric) as amount,
+  cast(nameOrig as string) as origin_account,
+  cast(nameDest as string) as destination_account,
+  cast(oldbalanceOrg as numeric) as old_balance_origin,
+  cast(newbalanceOrig as numeric) as new_balance_origin,
+  cast(oldbalanceDest as numeric) as old_balance_destination,
+  cast(newbalanceDest as numeric) as new_balance_destination,
+  cast(event_ts as timestamp) as event_ts,
+  cast(fraud_score as float64) as fraud_score,
+  ${toBool("predicted_is_fraud")} as predicted_is_fraud,
+  ${toBool("is_alert")} as is_alert,
+  cast(isFraud as int64) as is_fraud_label,
+  ${toBool("is_label_available")} as is_label_available,
+  cast(label_delay_hours as float64) as label_delay_hours,
+  cast(velocity_5min as float64) as velocity_5min,
+  cast(balance_change_ratio as float64) as balance_change_ratio,
+  ${toBool("is_new_merchant")} as is_new_merchant,
+  cast(origin_balance_delta as float64) as origin_balance_delta,
+  cast(dest_balance_delta as float64) as destination_balance_delta,
+  cast(source_topic as string) as source_topic,
+  cast(source_partition as int64) as source_partition,
+  cast(source_offset as int64) as source_offset,
+  date(cast(event_ts as timestamp)) as event_date,
+  timestamp_trunc(cast(event_ts as timestamp), hour) as event_hour_utc
+from ${ref("curated_scored")}
