@@ -11,13 +11,17 @@ import argparse
 import os
 from pathlib import Path
 
-from google.cloud import bigquery
 from pyspark.ml import Pipeline
 from pyspark.ml.classification import RandomForestClassifier
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
 from pyspark.ml.feature import StringIndexer, VectorAssembler
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+
+try:
+    from google.cloud import bigquery
+except ImportError:  # Optional outside the local BigQuery client path.
+    bigquery = None
 
 
 JOIN_KEYS = [
@@ -35,6 +39,12 @@ JOIN_KEYS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Daily Spark model refresh job")
+    parser.add_argument(
+        "--runtime-mode",
+        choices=["local", "gcp-native"],
+        default=os.getenv("PIPELINE_MODE", "local"),
+        help="Runtime mode used to tune the Spark session for local execution or Dataproc Serverless",
+    )
     parser.add_argument(
         "--training-source",
         choices=["bigquery", "csv"],
@@ -119,16 +129,15 @@ def validate_local_paths(args: argparse.Namespace) -> None:
 def ensure_gcs_credentials(paths: list[str]) -> str | None:
     uses_gcs = any(is_cloud_uri(path) for path in paths)
     gcs_credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if uses_gcs and not gcs_credentials_file:
-        raise ValueError(
-            "GCS paths detected but GOOGLE_APPLICATION_CREDENTIALS is not set. "
-            "Set it to your service account key JSON file path."
-        )
-    return gcs_credentials_file or None
+    if uses_gcs and gcs_credentials_file:
+        return gcs_credentials_file
+    return None
 
 
-def build_spark(gcs_enabled: bool, gcs_credentials_file: str | None) -> SparkSession:
-    builder = SparkSession.builder.appName("fraud-daily-model-refresh").master("local[*]")
+def build_spark(gcs_enabled: bool, gcs_credentials_file: str | None, runtime_mode: str) -> SparkSession:
+    builder = SparkSession.builder.appName("fraud-daily-model-refresh")
+    if runtime_mode == "local":
+        builder = builder.master("local[*]")
 
     if gcs_enabled:
         builder = (
@@ -171,7 +180,44 @@ def build_model_refresh_dataset_from_csv(scored_df: DataFrame, labels_df: DataFr
 
 
 def build_model_refresh_dataset_from_bigquery(spark: SparkSession, args: argparse.Namespace) -> DataFrame:
-    table_ref = f"`{args.project_id}.{args.dataset}.{args.retraining_table}`"
+    table_ref = f"{args.project_id}.{args.dataset}.{args.retraining_table}"
+    quoted_table_ref = f"`{table_ref}`"
+    empty_schema = "step int, type string, amount double, nameOrig string, nameDest string, oldbalanceOrg double, newbalanceOrig double, oldbalanceDest double, newbalanceDest double, isFraud double, velocity_5min double, balance_change_ratio double, is_new_merchant double, origin_balance_delta double, dest_balance_delta double"
+
+    if args.runtime_mode == "gcp-native":
+        bigquery_df = (
+            spark.read.format("bigquery")
+            .option("table", table_ref)
+            .load()
+            .select(
+                F.col("step").cast("int").alias("step"),
+                F.col("type").cast("string").alias("type"),
+                F.col("amount").cast("double").alias("amount"),
+                F.col("nameOrig").cast("string").alias("nameOrig"),
+                F.col("nameDest").cast("string").alias("nameDest"),
+                F.col("oldbalanceOrg").cast("double").alias("oldbalanceOrg"),
+                F.col("newbalanceOrig").cast("double").alias("newbalanceOrig"),
+                F.col("oldbalanceDest").cast("double").alias("oldbalanceDest"),
+                F.col("newbalanceDest").cast("double").alias("newbalanceDest"),
+                F.col("isFraud").cast("double").alias("isFraud"),
+                F.col("velocity_5min").cast("double").alias("velocity_5min"),
+                F.col("balance_change_ratio").cast("double").alias("balance_change_ratio"),
+                F.col("is_new_merchant").cast("double").alias("is_new_merchant"),
+                F.col("origin_balance_delta").cast("double").alias("origin_balance_delta"),
+                F.col("dest_balance_delta").cast("double").alias("dest_balance_delta"),
+            )
+            .filter(F.col("isFraud").isNotNull())
+        )
+        if not bigquery_df.take(1):
+            return spark.createDataFrame([], schema=empty_schema)
+        return bigquery_df
+
+    if bigquery is None:
+        raise RuntimeError(
+            "google-cloud-bigquery is not installed. Install it to use --training-source bigquery in local mode."
+        )
+
+    bq_client = bigquery.Client(project=args.project_id)
     query = f"""
 select
   cast(step as int64) as step,
@@ -189,14 +235,13 @@ select
   cast(is_new_merchant as float64) as is_new_merchant,
   cast(origin_balance_delta as float64) as origin_balance_delta,
   cast(dest_balance_delta as float64) as dest_balance_delta
-from {table_ref}
+from {quoted_table_ref}
 where isFraud is not null
 """
 
-    bq_client = bigquery.Client(project=args.project_id)
     pandas_df = bq_client.query(query).to_dataframe(create_bqstorage_client=False)
     if pandas_df.empty:
-        return spark.createDataFrame([], schema="step int, type string, amount double, nameOrig string, nameDest string, oldbalanceOrg double, newbalanceOrig double, oldbalanceDest double, newbalanceDest double, isFraud double, velocity_5min double, balance_change_ratio double, is_new_merchant double, origin_balance_delta double, dest_balance_delta double")
+        return spark.createDataFrame([], schema=empty_schema)
     return spark.createDataFrame(pandas_df)
 
 
@@ -323,9 +368,16 @@ def main() -> None:
     gcs_credentials_file = ensure_gcs_credentials(gcs_paths)
     validate_local_paths(args)
 
+    if args.runtime_mode == "local" and any(is_cloud_uri(path) for path in gcs_paths) and not gcs_credentials_file:
+        raise ValueError(
+            "GCS paths detected but GOOGLE_APPLICATION_CREDENTIALS is not set. "
+            "Set it to your service account key JSON file path."
+        )
+
     spark = build_spark(
         gcs_enabled=any(is_cloud_uri(path) for path in gcs_paths),
         gcs_credentials_file=gcs_credentials_file,
+        runtime_mode=args.runtime_mode,
     )
 
     if args.training_source == "bigquery":
