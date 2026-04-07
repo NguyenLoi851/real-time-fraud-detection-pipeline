@@ -1,0 +1,12 @@
+{
+  "name": "fraud-warehouse-dataform",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "compile": "dataform compile",
+    "run": "dataform run"
+  },
+  "devDependencies": {
+    "@dataform/cli": "^3.0.0"
+  }
+}
