@@ -10,7 +10,7 @@ Build and operate a Tableau dashboard from BigQuery warehouse outputs.
 - dbt marts built (at minimum `mart_fraud_hourly_kpis`)
 - BigQuery read access
 
-For execution prerequisites and pipeline order, see [../docs/runbook-gcp.md](../docs/runbook-gcp.md).
+For execution prerequisites and pipeline order, see [../docs/runbook-cloud.md](../docs/runbook-cloud.md).
 
 ## Source Tables
 

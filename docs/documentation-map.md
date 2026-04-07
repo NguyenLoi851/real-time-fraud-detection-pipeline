@@ -9,7 +9,7 @@ This page defines a single source of truth for project documentation.
 | Project overview and architecture | `README.md` | All module README files |
 | Environment prerequisites (Python, Docker, Spark, GCP auth) | `docs/prerequisites.md` | Root + all runnable modules |
 | End-to-end local execution | `docs/runbook-local.md` | `README.md` |
-| End-to-end GCP execution | `docs/runbook-gcp.md` | `README.md`, cloud modules |
+| End-to-end cloud execution | `docs/runbook-cloud.md` | `README.md`, cloud modules |
 | Common troubleshooting and operations checks | `docs/operations.md` | Root + runtime modules |
 | Data schema and dataset notes | `data/README.md` | Root, ML, streaming |
 | Simulator (entrypoint + submodules) | `simulator/README.md` | Root |
