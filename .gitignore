@@ -234,3 +234,6 @@ ml/artifacts/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Node.js dependencies
+node_modules/
