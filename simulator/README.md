@@ -8,6 +8,7 @@ Generate transaction events and publish them for streaming ingestion.
 
 - CSV event simulation: [csv/README.md](csv/README.md)
 - Kafka producer and validation consumer: [kafka/README.md](kafka/README.md)
+- Pub/Sub transaction publisher (cloud path): [pubsub/README.md](pubsub/README.md)
 
 ## Recommended Flow
 
