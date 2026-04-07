@@ -1,0 +1,8 @@
+{
+  "defaultSchema": "fraud_analytics_df",
+  "assertionSchema": "fraud_analytics_assertions",
+  "defaultLocation": "US",
+  "vars": {
+    "raw_dataset": "fraud_analytics"
+  }
+}
