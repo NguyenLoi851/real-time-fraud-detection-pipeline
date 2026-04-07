@@ -14,6 +14,10 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 
+def is_cloud_uri(path: str) -> bool:
+    return path.startswith("gs://")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train and save a baseline fraud model for streaming inference")
     parser.add_argument("--input", default="data/transaction_log.csv", help="Input labeled CSV path")
@@ -81,11 +85,12 @@ def main() -> None:
     )
     spark.sparkContext.setLogLevel("WARN")
 
-    input_path = Path(args.input)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input CSV not found: {input_path}")
+    if not is_cloud_uri(args.input):
+        input_path = Path(args.input)
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input CSV not found: {input_path}")
 
-    raw_df = spark.read.option("header", True).csv(str(input_path))
+    raw_df = spark.read.option("header", True).csv(args.input)
     if args.max_rows > 0:
         raw_df = raw_df.limit(args.max_rows)
 
@@ -134,11 +139,13 @@ def main() -> None:
     evaluator = BinaryClassificationEvaluator(labelCol="isFraud", rawPredictionCol="rawPrediction", metricName="areaUnderROC")
     auc = evaluator.evaluate(predictions)
 
-    output_path = Path(args.model_output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    model.write().overwrite().save(str(output_path))
+    if not is_cloud_uri(args.model_output):
+        output_path = Path(args.model_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"Model saved to: {output_path}")
+    model.write().overwrite().save(args.model_output)
+
+    print(f"Model saved to: {args.model_output}")
     print(f"Validation AUC: {auc:.4f}")
 
     spark.stop()
