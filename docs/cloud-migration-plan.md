@@ -445,3 +445,613 @@ gcloud pubsub subscriptions delete "$ALERT_PULL_SUBSCRIPTION"
 gcloud pubsub topics delete "$PUBSUB_FRAUD_ALERTS_TOPIC"
 gcloud pubsub topics delete "$PUBSUB_TRANSACTIONS_TOPIC"
 ```
+
+---
+
+## 13) Phase 2 Implementation (Completed in Repository)
+
+Phase 2 is now implemented with Dataproc Serverless-ready Spark entrypoints and submit wrappers.
+
+Repository additions and updates:
+
+- Spark jobs now support `--runtime-mode local|gcp-native` and do not force `local[*]` in cloud mode:
+  - `batch/hourly_batch_processing.py`
+  - `batch/daily_model_refresh.py`
+  - `streaming/pyspark_fraud_streaming.py`
+- Daily model refresh now reads BigQuery through the Spark BigQuery connector when `--runtime-mode gcp-native` is used.
+- Dataproc Serverless submit scripts were added under:
+  - `scripts/gcp/dataproc/submit_hourly_batch.sh`
+  - `scripts/gcp/dataproc/submit_hourly_bq_load.sh`
+  - `scripts/gcp/dataproc/submit_daily_model_refresh.sh`
+  - `scripts/gcp/dataproc/submit_streaming_batch.sh`
+
+Behavior notes:
+
+- Cloud mode uses Dataproc ADC for GCS access, so `GOOGLE_APPLICATION_CREDENTIALS` is optional on Dataproc Serverless.
+- The hourly and daily jobs are the primary Phase 2 Dataproc workloads.
+- The streaming script now consumes from Pub/Sub subscription input and publishes fraud alerts to a Pub/Sub topic in cloud-native mode.
+
+---
+
+## 14) Detailed GCP Setup and Operations Guide for Phase 2 (Dataproc Serverless Spark)
+
+This section is the step-by-step operator guide for running the Phase 2 Spark workloads on GCP with Dataproc Serverless.
+
+### 14.1 Prerequisites
+
+1. Local tools:
+  - `gcloud` CLI installed and authenticated.
+  - Bash shell available on macOS or Linux.
+2. GCP permissions on the target project:
+  - Dataproc Serverless job submission.
+  - BigQuery read access for the model refresh job.
+  - Storage access to the bucket used for model artifacts and lake outputs.
+3. Required APIs enabled:
+  - `dataproc.googleapis.com`
+  - `bigquery.googleapis.com`
+  - `storage.googleapis.com`
+
+### 14.2 Set Working Environment Variables
+
+Run this section in order:
+
+1. Use **14.2.1** to decide/create each value.
+2. After values are ready, run the export block in **14.2.2**.
+
+### 14.2.1 How to Choose/Create Each Value
+
+Use this section if any variable value is unclear.
+
+1. `GCP_PROJECT_ID`
+  - Your GCP project id.
+  - Find it with:
+
+```bash
+gcloud projects list
+```
+
+2. `GCP_REGION`
+  - Region where Dataproc Serverless batches run.
+  - Must match where your subnet exists (if subnet is set).
+
+3. `GCP_GCS_BUCKET`
+  - Root bucket used by Phase 2 paths (`lake/`, `checkpoints/`, `ml/artifacts/`).
+
+3.1 `GCP_DATAPROC_DEPS_BUCKET`
+  - GCS bucket used by `gcloud dataproc batches submit` to stage dependencies.
+  - Set this to `GCP_GCS_BUCKET` unless you want a separate staging bucket.
+  - This avoids the error: `--deps-bucket was not specified`.
+
+4. `GCP_DATAPROC_SERVICE_ACCOUNT`
+  - Runtime service account email used by Dataproc batches.
+  - Format:
+  - `<service-account-name>@<project-id>.iam.gserviceaccount.com`
+  - Use one fixed service account name for the whole runbook, for example:
+
+```bash
+export SA_NAME="dataproc-fraud-runtime"
+export GCP_DATAPROC_SERVICE_ACCOUNT="${SA_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+```
+
+  - The account creation step happens later in **14.3.1** using this same value.
+
+5. `GCP_DATAPROC_SUBNET`
+  - Subnet resource path where Dataproc Serverless attaches network interfaces.
+  - Format:
+  - `projects/<project-id>/regions/<region>/subnetworks/<subnet-name>`
+
+List existing subnets:
+
+```bash
+gcloud compute networks subnets list \
+  --project "$GCP_PROJECT_ID" \
+  --regions "$GCP_REGION"
+```
+
+Set existing subnet value:
+
+```bash
+export GCP_DATAPROC_SUBNET="projects/${GCP_PROJECT_ID}/regions/${GCP_REGION}/subnetworks/<subnet-name>"
+```
+
+If you do not have a subnet yet, create one:
+
+```bash
+gcloud compute networks create fraud-vpc \
+  --project "$GCP_PROJECT_ID" \
+  --subnet-mode=custom
+
+gcloud compute networks subnets create fraud-dataproc-subnet \
+  --project "$GCP_PROJECT_ID" \
+  --region "$GCP_REGION" \
+  --network fraud-vpc \
+  --range 10.10.0.0/24 \
+  --enable-private-ip-google-access
+
+export GCP_DATAPROC_SUBNET="projects/${GCP_PROJECT_ID}/regions/${GCP_REGION}/subnetworks/fraud-dataproc-subnet"
+```
+
+If you see this warning after creating the VPC, it is expected for custom networks:
+
+`Instances on this network will not be reachable until firewall rules are created.`
+
+For this Dataproc Serverless Phase 2 flow:
+
+- You usually do not need SSH/RDP ingress rules.
+- Dataproc Serverless does not require direct VM login for these jobs.
+- Prioritize subnet + IAM + bucket/dataset permissions first.
+
+Optional internal firewall rule (safe baseline for internal traffic inside the subnet):
+
+```bash
+gcloud compute firewall-rules create fraud-allow-internal \
+  --project "$GCP_PROJECT_ID" \
+  --network fraud-vpc \
+  --direction INGRESS \
+  --priority 1000 \
+  --action ALLOW \
+  --rules tcp,udp,icmp \
+  --source-ranges 10.10.0.0/24
+```
+
+You can leave this variable empty to let Dataproc use default networking, but explicit subnet is recommended for production.
+
+6. `RUN_TS` and batch id variables (`GCP_DATAPROC_HOURLY_BATCH_ID`, `GCP_DATAPROC_DAILY_BATCH_ID`, `GCP_DATAPROC_STREAMING_BATCH_ID`)
+  - `RUN_TS` is a timestamp string used to generate unique Dataproc batch ids.
+  - Format from `date +%Y%m%d%H%M%S`: `YYYYMMDDHHMMSS`.
+  - Example: `20260407143055`.
+
+Generate once and reuse for all 3 job ids:
+
+```bash
+export RUN_TS="$(date +%Y%m%d%H%M%S)"
+export GCP_DATAPROC_HOURLY_BATCH_ID="fraud-hourly-batch-${RUN_TS}"
+export GCP_DATAPROC_BQ_LOAD_BATCH_ID="fraud-hourly-bq-load-${RUN_TS}"
+export GCP_DATAPROC_DAILY_BATCH_ID="fraud-daily-model-refresh-${RUN_TS}"
+export GCP_DATAPROC_STREAMING_BATCH_ID="fraud-streaming-batch-${RUN_TS}"
+```
+
+If you run jobs again later, regenerate `RUN_TS` first so ids stay unique:
+
+```bash
+export RUN_TS="$(date +%Y%m%d%H%M%S)"
+```
+
+7. `PIPELINE_MODE`
+  - Use `gcp-native` for Dataproc/Cloud mode.
+
+8. `FRAUD_SHUFFLE_PARTITIONS`
+  - Spark shuffle partition hint for these jobs.
+  - Start with `8`; tune based on data volume and job runtime.
+
+9. `BIGQUERY_CONNECTOR_PACKAGE`
+  - Optional Maven coordinate override for Spark BigQuery connector used by daily model refresh.
+  - Default behavior uses the Dataproc Serverless built-in BigQuery connector (recommended).
+
+10. `FRAUD_SILVER_PATH`, `FRAUD_LABELS_CSV`, `FRAUD_HOURLY_OUTPUT_BASE`, `FRAUD_MODEL_OUTPUT`
+  - Paths under `gs://${GCP_GCS_BUCKET}` used by hourly and daily jobs.
+  - Keep defaults unless you want separate prefixes/environments.
+
+11. `FRAUD_BQ_DATASET`, `FRAUD_RETRAINING_TABLE`
+  - BigQuery dataset and table read by daily model refresh.
+  - Defaults match this repo's Phase 2 implementation.
+
+### 14.2.2 Export Variables After Values Are Ready
+
+Run this block only after you complete **14.2.1**:
+
+```bash
+export GCP_PROJECT_ID="<your-project-id>"
+export GCP_REGION="us-central1"
+export GCP_GCS_BUCKET="<your-lake-and-artifacts-bucket>"
+export GCP_DATAPROC_DEPS_BUCKET="${GCP_GCS_BUCKET}"
+export SA_NAME="dataproc-fraud-runtime"
+export GCP_DATAPROC_SERVICE_ACCOUNT="${SA_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+export GCP_DATAPROC_SUBNET="<optional-vpc-subnet-uri>"
+export RUN_TS="$(date +%Y%m%d%H%M%S)"
+export GCP_DATAPROC_HOURLY_BATCH_ID="fraud-hourly-batch-${RUN_TS}"
+export GCP_DATAPROC_BQ_LOAD_BATCH_ID="fraud-hourly-bq-load-${RUN_TS}"
+export GCP_DATAPROC_DAILY_BATCH_ID="fraud-daily-model-refresh-${RUN_TS}"
+export GCP_DATAPROC_STREAMING_BATCH_ID="fraud-streaming-batch-${RUN_TS}"
+
+export PIPELINE_MODE="gcp-native"
+export FRAUD_SHUFFLE_PARTITIONS="8"
+# Optional: only set this if you intentionally override Dataproc's built-in connector.
+# export BIGQUERY_CONNECTOR_PACKAGE="com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.42.1"
+
+export FRAUD_SILVER_PATH="gs://${GCP_GCS_BUCKET}/lake/silver/scored_transactions"
+export FRAUD_LABELS_CSV="gs://${GCP_GCS_BUCKET}/inputs/transaction_log.csv"
+export FRAUD_HOURLY_OUTPUT_BASE="gs://${GCP_GCS_BUCKET}/lake/gold/hourly_batch"
+
+export FRAUD_MODEL_OUTPUT="gs://${GCP_GCS_BUCKET}/ml/artifacts/fraud_rf_pipeline"
+export FRAUD_BQ_DATASET="fraud_analytics"
+export FRAUD_RETRAINING_TABLE="retraining_dataset"
+```
+
+For the streaming batch wrapper (Pub/Sub source), also set:
+
+```bash
+export FRAUD_INPUT_SUBSCRIPTION="transactions-raw-pull-sub"
+export FRAUD_ALERTS_TOPIC="fraud_alerts"
+export FRAUD_MODEL_PATH="gs://${GCP_GCS_BUCKET}/ml/artifacts/fraud_rf_pipeline"
+export FRAUD_RAW_PATH="gs://${GCP_GCS_BUCKET}/lake/bronze/transactions_raw"
+export FRAUD_SCORED_PATH="gs://${GCP_GCS_BUCKET}/lake/silver/scored_transactions"
+export FRAUD_ALERTS_PATH="gs://${GCP_GCS_BUCKET}/lake/gold/fraud_alerts"
+```
+
+Initialize gcloud context:
+
+```bash
+gcloud config set project "$GCP_PROJECT_ID"
+gcloud config set dataproc/region "$GCP_REGION"
+```
+
+### 14.3 Enable Required GCP Services
+
+```bash
+gcloud services enable dataproc.googleapis.com bigquery.googleapis.com storage.googleapis.com pubsub.googleapis.com
+```
+
+### 14.3.1 Create and Grant IAM Roles for Dataproc Runtime Service Account
+
+Create a dedicated service account for Dataproc Serverless jobs and grant only the roles required for Phase 2.
+
+Use the same values already set in **14.2.2**:
+
+```bash
+export SA_EMAIL="$GCP_DATAPROC_SERVICE_ACCOUNT"
+```
+
+Create the service account:
+
+```bash
+gcloud iam service-accounts create "$SA_NAME" \
+  --project "$GCP_PROJECT_ID" \
+  --display-name "Dataproc Fraud Runtime"
+```
+
+Grant Dataproc worker role on the project:
+
+```bash
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member "serviceAccount:${SA_EMAIL}" \
+  --role "roles/dataproc.worker"
+```
+
+Grant GCS permissions on the cloud-native bucket used by Phase 2 scripts:
+
+```bash
+gcloud storage buckets add-iam-policy-binding "gs://${GCP_GCS_BUCKET}" \
+  --member "serviceAccount:${SA_EMAIL}" \
+  --role "roles/storage.objectAdmin"
+```
+
+Grant Pub/Sub permissions for streaming input/output:
+
+```bash
+gcloud pubsub subscriptions add-iam-policy-binding "$FRAUD_INPUT_SUBSCRIPTION" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.subscriber"
+
+gcloud pubsub topics add-iam-policy-binding "$FRAUD_ALERTS_TOPIC" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.publisher"
+```
+
+Grant BigQuery read permissions for daily model refresh:
+
+```bash
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member "serviceAccount:${SA_EMAIL}" \
+  --role "roles/bigquery.jobUser"
+
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member "serviceAccount:${SA_EMAIL}" \
+  --role "roles/bigquery.readSessionUser"
+
+bq query --use_legacy_sql=false \
+  "GRANT \`roles/bigquery.dataViewer\` ON SCHEMA \`${GCP_PROJECT_ID}.${FRAUD_BQ_DATASET}\` TO 'serviceAccount:${SA_EMAIL}'"
+```
+
+Allow the submitting identity (your user or CI service account) to run Dataproc batches as this runtime service account:
+
+```bash
+export SUBMITTER_ACCOUNT="$(gcloud config get-value account)"
+
+gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+  --member "user:${SUBMITTER_ACCOUNT}" \
+  --role "roles/iam.serviceAccountUser"
+```
+
+Finally, set the runtime service account variable used by the scripts:
+
+```bash
+export GCP_DATAPROC_SERVICE_ACCOUNT="$SA_EMAIL"
+```
+
+### 14.4 Streaming-First Runtime Order (Recommended)
+
+Recommended execution order for this repository:
+
+1. Run streaming ingestion/scoring first so fresh scored data is written to GCS.
+2. Run hourly batch to build curated/retraining/monitoring outputs from that fresh data.
+3. Load hourly curated outputs from GCS into BigQuery raw batch tables.
+4. Run daily model refresh after hourly outputs exist.
+
+This avoids pushing stale local data to cloud paths.
+
+### 14.5 Run the Streaming Batch Wrapper First
+
+This wrapper consumes transaction events from your Pub/Sub subscription and writes scored outputs to GCS.
+
+Before submitting the batch, verify that the trained Spark model exists in GCS:
+
+```bash
+gsutil ls "${FRAUD_MODEL_PATH}/metadata"
+```
+
+If it does not exist yet, generate it locally first (artifacts are gitignored):
+
+```bash
+python3 ml/train_fraud_model.py \
+  --input data/transaction_log.csv \
+  --model-output ml/artifacts/fraud_rf_pipeline
+```
+
+Then upload the generated artifact to GCS:
+
+```bash
+gsutil -m cp -r ml/artifacts/fraud_rf_pipeline "$FRAUD_MODEL_PATH"
+```
+
+If streaming still fails at `PipelineModel.load` with Spark model schema/column errors, the model was likely trained with an incompatible Spark version (for example Spark 4.x locally vs Spark 3.x on Dataproc). Rebuild the model on Dataproc:
+
+```bash
+bash scripts/gcp/dataproc/submit_model_train_bootstrap.sh
+```
+
+This script will:
+
+- Upload `data/transaction_log.csv` to `gs://${GCP_GCS_BUCKET}/inputs/transaction_log.csv` if missing.
+- Train `ml/train_fraud_model.py` on Dataproc runtime.
+- Write a Dataproc-compatible model to `FRAUD_MODEL_PATH`.
+
+```bash
+bash scripts/gcp/dataproc/submit_streaming_batch.sh
+```
+
+It validates Dataproc runtime wiring and produces fresh records under:
+
+- `FRAUD_RAW_PATH`
+- `FRAUD_SCORED_PATH` (drives hourly batch)
+- `FRAUD_ALERTS_PATH`
+
+### 14.6 Run the Hourly Dataproc Batch
+
+After streaming has produced data in `FRAUD_SILVER_PATH`, run:
+
+```bash
+bash scripts/gcp/dataproc/submit_hourly_batch.sh
+```
+
+What it does:
+
+- Reads scored transactions from `FRAUD_SILVER_PATH`.
+- Joins labels from `FRAUD_LABELS_CSV`.
+- Writes curated scored, retraining, and monitoring outputs to `FRAUD_HOURLY_OUTPUT_BASE`.
+
+Optional targeted replay for one UTC hour:
+
+```bash
+export FRAUD_TARGET_HOUR_UTC="2026-04-07-13"
+bash scripts/gcp/dataproc/submit_hourly_batch.sh
+```
+
+### 14.6.1 Load Hourly Batch Outputs to BigQuery
+
+Run this immediately after **14.6** on Dataproc Serverless so curated hourly outputs are available in BigQuery before downstream daily refresh operations.
+
+```bash
+bash scripts/gcp/dataproc/submit_hourly_bq_load.sh
+```
+
+What it does:
+
+- Submits `batch/load_hourly_batch_to_bigquery.py` as a Dataproc PySpark batch in `gcp-native` mode.
+- Reads hourly parquet outputs from `FRAUD_HOURLY_OUTPUT_BASE`.
+- Loads `curated_scored`, `retraining_dataset`, and `monitoring_hourly` into `FRAUD_BQ_DATASET`.
+
+Optional controls:
+
+- `FRAUD_BQ_LOAD_WRITE_DISPOSITION=WRITE_APPEND|WRITE_TRUNCATE|WRITE_EMPTY`
+- `FRAUD_BQ_LOAD_TABLES="curated_scored retraining_dataset"`
+- `FRAUD_BQ_TEMP_BUCKET=<gcs-bucket-for-temp-connector-writes>`
+
+Default tables loaded by this script:
+
+- `curated_scored`
+- `retraining_dataset`
+- `monitoring_hourly`
+
+### 14.7 Run the Daily Model Refresh Dataproc Batch
+
+Run after **14.6** and **14.6.1** are completed, and after exporting variables from **14.2.2** (at minimum `GCP_PROJECT_ID` and `GCP_GCS_BUCKET`):
+
+```bash
+bash scripts/gcp/dataproc/submit_daily_model_refresh.sh
+```
+
+If Dataproc submission fails with regional CPU quota errors (for example `CPUS_ALL_REGIONS`), use a valid Serverless Spark minimum shape:
+
+```bash
+export GCP_DATAPROC_SPARK_PROPERTIES="spark.dynamicAllocation.enabled=false,spark.driver.cores=4,spark.executor.instances=2,spark.executor.cores=4"
+bash scripts/gcp/dataproc/submit_daily_model_refresh.sh
+```
+
+Dataproc Serverless requires:
+
+- driver cores in `{4, 8, 16}`
+- executor cores in `{4, 8, 16}`
+- at least 2 executors
+
+So the practical minimum request is 12 vCPUs (4 driver + 2 x 4 executor). If your `CPUS_ALL_REGIONS` quota is 8, this job cannot run in Serverless Spark until you increase quota or submit in a region with available quota >= 12.
+
+What it does:
+
+- Reads retraining data from BigQuery using the Spark BigQuery connector.
+- Refreshes the fraud model artifact.
+- Writes refreshed `PipelineModel` to `FRAUD_MODEL_OUTPUT` in GCS.
+
+If you need CSV fallback instead of BigQuery:
+
+```bash
+export FRAUD_TRAINING_SOURCE="csv"
+export FRAUD_SILVER_PATH="gs://${GCP_GCS_BUCKET}/lake/silver/scored_transactions"
+export FRAUD_LABELS_CSV="gs://${GCP_GCS_BUCKET}/inputs/transaction_log.csv"
+bash scripts/gcp/dataproc/submit_daily_model_refresh.sh
+```
+
+### 14.7.1 Optional Bootstrap Path (Only If You Skip Streaming)
+
+Use this only if you need a quick one-time bootstrap and are not running streaming first.
+
+```bash
+gsutil cp data/transaction_log.csv "$FRAUD_LABELS_CSV"
+gsutil cp -r data/lake/silver/scored_transactions "$FRAUD_SILVER_PATH"
+```
+
+If you are using a fresh environment, make sure the model artifact exists in GCS before running streaming or batch wrappers.
+
+### 14.8 Verify Outputs
+
+Check the hourly outputs in GCS:
+
+```bash
+gsutil ls "$FRAUD_HOURLY_OUTPUT_BASE/curated_scored"
+gsutil ls "$FRAUD_HOURLY_OUTPUT_BASE/retraining_dataset"
+gsutil ls "$FRAUD_HOURLY_OUTPUT_BASE/monitoring_hourly"
+```
+
+Check the refreshed model artifact:
+
+```bash
+gsutil ls "$FRAUD_MODEL_OUTPUT"
+```
+
+Inspect Dataproc batch status:
+
+```bash
+gcloud dataproc batches list --region "$GCP_REGION"
+gcloud dataproc batches describe "$GCP_DATAPROC_HOURLY_BATCH_ID" --region "$GCP_REGION"
+gcloud dataproc batches describe "$GCP_DATAPROC_DAILY_BATCH_ID" --region "$GCP_REGION"
+```
+
+### 14.9 Common Failure Cases and Fixes
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` is missing in local testing:
+  - Set it only for local runs that access `gs://` paths directly.
+  - Do not set it on Dataproc Serverless unless you intentionally want to use a JSON key file.
+2. BigQuery connector load fails:
+  - Confirm the batch script is using a tested `BIGQUERY_CONNECTOR_PACKAGE` value.
+  - Confirm the Dataproc service account can read the BigQuery dataset.
+3. Daily model refresh fails with `java.util.ServiceConfigurationError ... BigQueryRelationProvider not a subtype`:
+  - This is typically a BigQuery connector classpath conflict.
+  - First, remove any connector override and use Dataproc's built-in connector:
+
+```bash
+unset BIGQUERY_CONNECTOR_PACKAGE
+unset GCP_DATAPROC_USE_BIGQUERY_CONNECTOR_OVERRIDE
+bash scripts/gcp/dataproc/submit_daily_model_refresh.sh
+```
+
+  - If you must override manually for Dataproc 2.2, opt in explicitly and use `_2.12`:
+
+```bash
+export BIGQUERY_CONNECTOR_PACKAGE="com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.42.1"
+export GCP_DATAPROC_USE_BIGQUERY_CONNECTOR_OVERRIDE="true"
+bash scripts/gcp/dataproc/submit_daily_model_refresh.sh
+```
+4. Hourly job reports no matching rows:
+  - Check `FRAUD_TARGET_HOUR_UTC` formatting.
+  - Confirm the input parquet contains the requested time window.
+5. Streaming wrapper fails immediately:
+  - Confirm `FRAUD_INPUT_SUBSCRIPTION` exists and has messages.
+  - Confirm Dataproc runtime service account has `roles/pubsub.subscriber` on that subscription.
+  - Confirm Dataproc runtime service account has `roles/pubsub.publisher` on `FRAUD_ALERTS_TOPIC` if alert publish is enabled.
+6. Streaming fails with `403 ... pubsub.subscriptions.consume`:
+  - Re-apply Pub/Sub IAM bindings for the Dataproc runtime service account:
+
+```bash
+export SA_EMAIL="$GCP_DATAPROC_SERVICE_ACCOUNT"
+
+gcloud pubsub subscriptions add-iam-policy-binding "$FRAUD_INPUT_SUBSCRIPTION" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.subscriber"
+
+gcloud pubsub topics add-iam-policy-binding "$FRAUD_ALERTS_TOPIC" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/pubsub.publisher"
+```
+
+7. Streaming fails at `PipelineModel.load` with schema/column errors (for example unresolved `treeID`):
+  - The model was trained with an incompatible Spark major version.
+  - Rebuild model on Dataproc and resubmit streaming:
+
+```bash
+bash scripts/gcp/dataproc/submit_model_train_bootstrap.sh
+bash scripts/gcp/dataproc/submit_streaming_batch.sh
+```
+
+8. Need fast diagnostics for the latest streaming batch failure:
+
+```bash
+gcloud dataproc batches list --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --sort-by=~createTime --limit=5
+gcloud dataproc batches wait "$GCP_DATAPROC_STREAMING_BATCH_ID" --region "$GCP_REGION" --project "$GCP_PROJECT_ID"
+```
+
+9. Streaming fails with `GoogleJsonResponseException: 412 Precondition Failed` when writing to `gs://` outputs:
+  - This usually means two writers raced on the same GCS output prefix (for example, two streaming batches writing to the same `FRAUD_RAW_PATH` / `FRAUD_SCORED_PATH` / `FRAUD_ALERTS_PATH`).
+  - First, ensure only one streaming Dataproc batch is active:
+
+```bash
+gcloud dataproc batches list \
+  --region "$GCP_REGION" \
+  --project "$GCP_PROJECT_ID" \
+  --filter='state=RUNNING' \
+  --sort-by=~createTime
+```
+
+  - If you find duplicate streaming runs, cancel older ones and rerun only one:
+
+```bash
+gcloud dataproc batches delete "<running-streaming-batch-id>" \
+  --region "$GCP_REGION" \
+  --project "$GCP_PROJECT_ID"
+
+bash scripts/gcp/dataproc/submit_streaming_batch.sh
+```
+
+  - If a previous failed run left temporary output state, clear only the temporary directories under the target prefixes (do not wipe full datasets unless you intend a reset):
+
+```bash
+gsutil -m rm -r "${FRAUD_RAW_PATH%/}/_temporary/**" || true
+gsutil -m rm -r "${FRAUD_SCORED_PATH%/}/_temporary/**" || true
+gsutil -m rm -r "${FRAUD_ALERTS_PATH%/}/_temporary/**" || true
+```
+
+### 14.10 Cleanup Commands (Optional)
+
+```bash
+gcloud dataproc batches list --region "$GCP_REGION"
+```
+
+Dataproc batches are managed services and typically do not need manual cleanup after completion. Remove generated GCS outputs only if you want to reset the environment:
+
+```bash
+gsutil rm -r "$FRAUD_HOURLY_OUTPUT_BASE"
+gsutil rm -r "$FRAUD_MODEL_OUTPUT"
+```
