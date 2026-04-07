@@ -38,7 +38,7 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 - Documentation ownership map: [docs/documentation-map.md](docs/documentation-map.md)
 - Shared prerequisites: [docs/prerequisites.md](docs/prerequisites.md)
 - End-to-end local runbook: [docs/runbook-local.md](docs/runbook-local.md)
-- End-to-end GCP runbook: [docs/runbook-gcp.md](docs/runbook-gcp.md)
+- End-to-end cloud runbook: [docs/runbook-cloud.md](docs/runbook-cloud.md)
 - Operations and troubleshooting: [docs/operations.md](docs/operations.md)
 - Tableau chart build guide: [docs/tableau-chart-instructions.md](docs/tableau-chart-instructions.md)
 
@@ -74,7 +74,7 @@ After selecting a version, use:
 
 - For local: use [docs/runbook-local.md](docs/runbook-local.md).
 - For hybrid: use [docs/runbook-hybrid.md](docs/runbook-hybrid.md).
-- For cloud-native: use [docs/runbook-gcp.md](docs/runbook-gcp.md).
+- For cloud-native: use [docs/runbook-cloud.md](docs/runbook-cloud.md).
 
 ## Module Guides
 
@@ -103,7 +103,7 @@ After selecting a version, use:
 
 1. Complete setup in [docs/prerequisites.md](docs/prerequisites.md).
 2. Provision foundation with [infra/terraform/README.md](infra/terraform/README.md).
-3. Execute [docs/runbook-native.md](docs/runbook-native.md).
+3. Execute [docs/runbook-cloud.md](docs/runbook-cloud.md).
 
 ## Documentation Rules
 

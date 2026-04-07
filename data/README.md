@@ -75,4 +75,4 @@ Transactions detected as fraud are cancelled. For fraud detection modeling, thes
 - `oldbalanceDest`
 - `newbalanceDest`
 
-For end-to-end execution order, see [../docs/runbook-local.md](../docs/runbook-local.md) and [../docs/runbook-gcp.md](../docs/runbook-gcp.md).
+For end-to-end execution order, see [../docs/runbook-local.md](../docs/runbook-local.md) and [../docs/runbook-cloud.md](../docs/runbook-cloud.md).
