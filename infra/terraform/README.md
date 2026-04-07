@@ -54,7 +54,7 @@ After apply, Terraform prints:
 - Bronze/Silver/Gold bucket names
 - BigQuery dataset ID and fully-qualified dataset reference
 
-Use these outputs in [../../docs/runbook-gcp.md](../../docs/runbook-gcp.md) and [../../streaming/README.md](../../streaming/README.md).
+Use these outputs in [../../docs/runbook-cloud.md](../../docs/runbook-cloud.md) and [../../streaming/README.md](../../streaming/README.md).
 
 ## Destroy
 

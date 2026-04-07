@@ -2,17 +2,52 @@ from __future__ import annotations
 
 import os
 from datetime import timedelta
-from pathlib import Path
 
 from airflow import DAG
-from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
+from airflow.models import Variable
+from airflow.providers.google.cloud.operators.dataform import DataformCreateWorkflowInvocationOperator
+from airflow.providers.google.cloud.operators.dataproc import DataprocCreateBatchOperator
+from airflow.providers.google.cloud.sensors.dataform import DataformWorkflowInvocationStateSensor
+from airflow.providers.google.cloud.sensors.dataproc import DataprocBatchSensor
 from airflow.utils.dates import days_ago
+from google.cloud.dataform_v1beta1.types import WorkflowInvocation
 
 
-PROJECT_ROOT = os.environ.get(
-    "FRAUD_PROJECT_ROOT",
-    str(Path(__file__).resolve().parents[2]),
+def cfg(name: str, default: str = "") -> str:
+    return Variable.get(name, default_var=os.environ.get(name, default))
+
+
+PROJECT_ID = cfg("FRAUD_GCP_PROJECT_ID")
+REGION = cfg("GCP_REGION", "us-central1")
+GCS_BUCKET = cfg("GCP_GCS_BUCKET", "")
+SERVICE_ACCOUNT = cfg("GCP_DATAPROC_SERVICE_ACCOUNT", "")
+SUBNET_URI = cfg("GCP_DATAPROC_SUBNET", "")
+SPARK_PROPERTIES = cfg(
+    "GCP_DATAPROC_SPARK_PROPERTIES",
+    "spark.dynamicAllocation.enabled=false,spark.driver.cores=4,spark.executor.instances=2,spark.executor.cores=4",
 )
+DATAFORM_REGION = cfg("DATAFORM_REGION", REGION)
+DATAFORM_REPOSITORY_ID = cfg("DATAFORM_REPOSITORY_ID", "fraud-warehouse")
+DATAFORM_RUN_WORKFLOW_CONFIG_ID = cfg("DATAFORM_RUN_WORKFLOW_CONFIG_ID", "fraud-main")
+DATAFORM_ASSERT_WORKFLOW_CONFIG_ID = cfg("DATAFORM_ASSERT_WORKFLOW_CONFIG_ID", "fraud-assertions")
+
+HOURLY_BATCH_PY_URI = cfg(
+    "FRAUD_HOURLY_BATCH_PY_URI",
+    f"gs://{GCS_BUCKET}/code/batch/hourly_batch_processing.py" if GCS_BUCKET else "",
+)
+HOURLY_BQ_LOAD_PY_URI = cfg(
+    "FRAUD_HOURLY_BQ_LOAD_PY_URI",
+    f"gs://{GCS_BUCKET}/code/batch/load_hourly_batch_to_bigquery.py" if GCS_BUCKET else "",
+)
+
+SILVER_PATH = cfg("FRAUD_SILVER_PATH", f"gs://{GCS_BUCKET}/lake/silver/scored_transactions" if GCS_BUCKET else "")
+LABELS_CSV = cfg("FRAUD_LABELS_CSV", f"gs://{GCS_BUCKET}/inputs/transaction_log.csv" if GCS_BUCKET else "")
+OUTPUT_BASE = cfg("FRAUD_HOURLY_OUTPUT_BASE", f"gs://{GCS_BUCKET}/lake/gold/hourly_batch" if GCS_BUCKET else "")
+BQ_DATASET = cfg("FRAUD_BQ_DATASET", cfg("FRAUD_BIGQUERY_DATASET", "fraud_analytics"))
+BQ_TEMP_BUCKET = cfg("FRAUD_BQ_TEMP_BUCKET", GCS_BUCKET)
+HOURLY_SHUFFLE_PARTITIONS = cfg("FRAUD_SHUFFLE_PARTITIONS", "8")
+
 ALERT_EMAILS = [
     email.strip()
     for email in os.environ.get("FRAUD_ALERT_EMAILS", "").split(",")
@@ -20,14 +55,45 @@ ALERT_EMAILS = [
 ]
 
 
-def build_bash(command: str) -> str:
-    return "\n".join(
-        [
-            "set -euo pipefail",
-            f"cd \"{PROJECT_ROOT}\"",
-            command,
-        ]
-    )
+def validate_required_settings() -> None:
+    required = {
+        "FRAUD_GCP_PROJECT_ID": PROJECT_ID,
+        "GCP_GCS_BUCKET": GCS_BUCKET,
+        "FRAUD_HOURLY_BATCH_PY_URI": HOURLY_BATCH_PY_URI,
+        "FRAUD_HOURLY_BQ_LOAD_PY_URI": HOURLY_BQ_LOAD_PY_URI,
+        "DATAFORM_REPOSITORY_ID": DATAFORM_REPOSITORY_ID,
+        "DATAFORM_RUN_WORKFLOW_CONFIG_ID": DATAFORM_RUN_WORKFLOW_CONFIG_ID,
+        "DATAFORM_ASSERT_WORKFLOW_CONFIG_ID": DATAFORM_ASSERT_WORKFLOW_CONFIG_ID,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise ValueError(f"Missing required Composer variables: {', '.join(missing)}")
+
+
+def build_dataproc_batch_config(main_python_file_uri: str, args: list[str]) -> dict:
+    config: dict = {
+        "pyspark_batch": {
+            "main_python_file_uri": main_python_file_uri,
+            "args": args,
+        },
+        "runtime_config": {
+            "properties": {
+                item.split("=", 1)[0]: item.split("=", 1)[1]
+                for item in SPARK_PROPERTIES.split(",")
+                if "=" in item and item.strip()
+            }
+        },
+    }
+
+    execution_config = {}
+    if SERVICE_ACCOUNT:
+        execution_config["service_account"] = SERVICE_ACCOUNT
+    if SUBNET_URI:
+        execution_config["subnetwork_uri"] = SUBNET_URI
+    if execution_config:
+        config["environment_config"] = {"execution_config": execution_config}
+
+    return config
 
 
 default_args = {
@@ -43,152 +109,166 @@ default_args = {
 
 with DAG(
     dag_id="fraud_hourly_batch_and_warehouse",
-    description="Hourly orchestration: Spark batch -> BigQuery load -> dbt run/test",
+    description="Hourly orchestration: Dataproc batch -> BigQuery load -> Dataform run/assert",
     default_args=default_args,
     start_date=days_ago(1),
     schedule="@hourly",
     catchup=False,
     max_active_runs=1,
-    tags=["fraud", "batch", "dbt", "bigquery"],
+    tags=["fraud", "batch", "composer", "dataform", "bigquery"],
 ) as dag:
-    validate_runtime = BashOperator(
+    validate_runtime = PythonOperator(
         task_id="validate_runtime",
-        bash_command=build_bash(
-            """
-if [[ -z \"${FRAUD_GCP_PROJECT_ID:-}\" ]]; then
-  echo \"[step8] FRAUD_GCP_PROJECT_ID is required\" >&2
-  exit 1
-fi
-
-if [[ -z \"${GOOGLE_APPLICATION_CREDENTIALS:-}\" ]]; then
-  echo \"[step8] GOOGLE_APPLICATION_CREDENTIALS is required\" >&2
-  exit 1
-fi
-
-if [[ ! -f \"${GOOGLE_APPLICATION_CREDENTIALS}\" ]]; then
-  echo \"[step8] Service account key not found: ${GOOGLE_APPLICATION_CREDENTIALS}\" >&2
-  exit 1
-fi
-
-command -v "${FRAUD_SPARK_SUBMIT_BIN:-spark-submit}" >/dev/null 2>&1 || {
-  echo \"[step8] spark-submit not found\" >&2
-  exit 1
-}
-
-command -v "${FRAUD_PYTHON_BIN:-python3}" >/dev/null 2>&1 || {
-  echo \"[step8] python3 not found\" >&2
-  exit 1
-}
-
-command -v dbt >/dev/null 2>&1 || {
-  echo \"[step8] dbt not found (install dbt and ensure it is on PATH)\" >&2
-  exit 1
-}
-"""
-        ),
+    python_callable=validate_required_settings,
     )
 
-    run_hourly_batch = BashOperator(
+    run_hourly_batch = DataprocCreateBatchOperator(
         task_id="run_hourly_batch",
-        execution_timeout=timedelta(minutes=60),
-        append_env=True,
-        bash_command=build_bash(
-            """
-"${FRAUD_SPARK_SUBMIT_BIN:-spark-submit}" \
-    --driver-memory "${FRAUD_SPARK_DRIVER_MEMORY:-4g}" \
-    --executor-memory "${FRAUD_SPARK_EXECUTOR_MEMORY:-4g}" \
-    --conf "spark.driver.maxResultSize=${FRAUD_SPARK_DRIVER_MAX_RESULT_SIZE:-1g}" \
-    --conf "spark.sql.shuffle.partitions=${FRAUD_HOURLY_BATCH_SHUFFLE_PARTITIONS:-8}" \
-  --packages com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.28 \
-  batch/hourly_batch_processing.py \
-  --silver-path "${FRAUD_SILVER_PATH:-data/lake/silver/scored_transactions}" \
-  --labels-csv "${FRAUD_LABELS_CSV:-data/transaction_log.csv}" \
-  --output-base "${FRAUD_BATCH_OUTPUT_BASE}" \
-    --shuffle-partitions "${FRAUD_HOURLY_BATCH_SHUFFLE_PARTITIONS:-8}" \
-"""
+        project_id=PROJECT_ID,
+        region=REGION,
+        batch_id="fraud-hourly-batch-{{ ts_nodash | lower }}",
+        batch=build_dataproc_batch_config(
+            HOURLY_BATCH_PY_URI,
+            [
+                "--runtime-mode",
+                "gcp-native",
+                "--silver-path",
+                SILVER_PATH,
+                "--labels-csv",
+                LABELS_CSV,
+                "--output-base",
+                OUTPUT_BASE,
+                "--shuffle-partitions",
+                HOURLY_SHUFFLE_PARTITIONS,
+            ],
         ),
-        env={
-            "FRAUD_BATCH_OUTPUT_BASE": os.environ.get("FRAUD_BATCH_OUTPUT_BASE", "gs://REPLACE_GOLD_BUCKET/hourly_batch"),
-            "FRAUD_SPARK_SUBMIT_BIN": os.environ.get("FRAUD_SPARK_SUBMIT_BIN", "/home/airflow/.local/bin/spark-submit"),
-            "FRAUD_SPARK_DRIVER_MEMORY": os.environ.get("FRAUD_SPARK_DRIVER_MEMORY", "4g"),
-            "FRAUD_SPARK_EXECUTOR_MEMORY": os.environ.get("FRAUD_SPARK_EXECUTOR_MEMORY", "4g"),
-            "FRAUD_SPARK_DRIVER_MAX_RESULT_SIZE": os.environ.get("FRAUD_SPARK_DRIVER_MAX_RESULT_SIZE", "1g"),
-            "FRAUD_HOURLY_BATCH_SHUFFLE_PARTITIONS": os.environ.get("FRAUD_HOURLY_BATCH_SHUFFLE_PARTITIONS", "8"),
-            "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""),
-        },
+        gcp_conn_id="google_cloud_default",
+        execution_timeout=timedelta(minutes=75),
+        deferrable=True,
     )
 
-    load_batch_to_bigquery = BashOperator(
+    wait_hourly_batch = DataprocBatchSensor(
+        task_id="wait_hourly_batch",
+        project_id=PROJECT_ID,
+        region=REGION,
+        batch_id="fraud-hourly-batch-{{ ts_nodash | lower }}",
+        gcp_conn_id="google_cloud_default",
+        timeout=60 * 75,
+        poke_interval=60,
+    )
+
+    load_batch_to_bigquery = DataprocCreateBatchOperator(
         task_id="load_batch_to_bigquery",
-        execution_timeout=timedelta(minutes=25),
-        append_env=True,
-        bash_command=build_bash(
-            """
-"${FRAUD_PYTHON_BIN:-python3}" batch/load_hourly_batch_to_bigquery.py \
-  --project-id "${FRAUD_GCP_PROJECT_ID}" \
-  --dataset "${FRAUD_BIGQUERY_DATASET:-fraud_analytics}" \
-  --gcs-output-base "${FRAUD_BATCH_OUTPUT_BASE}" \
-  --write-disposition WRITE_TRUNCATE \
-  --create-dataset-if-missing
-"""
+        project_id=PROJECT_ID,
+        region=REGION,
+        batch_id="fraud-hourly-bq-load-{{ ts_nodash | lower }}",
+        batch=build_dataproc_batch_config(
+            HOURLY_BQ_LOAD_PY_URI,
+            [
+                "--runtime-mode",
+                "gcp-native",
+                "--project-id",
+                PROJECT_ID,
+                "--dataset",
+                BQ_DATASET,
+                "--gcs-output-base",
+                OUTPUT_BASE,
+                "--write-disposition",
+                "WRITE_TRUNCATE",
+                "--create-dataset-if-missing",
+                "--temporary-gcs-bucket",
+                BQ_TEMP_BUCKET,
+            ],
         ),
-        env={
-            "FRAUD_GCP_PROJECT_ID": os.environ.get("FRAUD_GCP_PROJECT_ID", ""),
-            "FRAUD_BIGQUERY_DATASET": os.environ.get("FRAUD_BIGQUERY_DATASET", "fraud_analytics"),
-            "FRAUD_BATCH_OUTPUT_BASE": os.environ.get("FRAUD_BATCH_OUTPUT_BASE", "gs://REPLACE_GOLD_BUCKET/hourly_batch"),
-            "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""),
-        },
+        gcp_conn_id="google_cloud_default",
+        execution_timeout=timedelta(minutes=35),
+        deferrable=True,
     )
 
-    run_dbt_models = BashOperator(
-        task_id="run_dbt_models",
-        execution_timeout=timedelta(minutes=20),
-        append_env=True,
-        bash_command=build_bash(
-            """
-export DBT_PROFILES_DIR="${DBT_PROFILES_DIR:-${FRAUD_PROJECT_ROOT:-$PWD}/dbt}"
-export DBT_BIGQUERY_PROJECT="${DBT_BIGQUERY_PROJECT:-${FRAUD_GCP_PROJECT_ID}}"
-export DBT_BIGQUERY_DATASET="${DBT_BIGQUERY_DATASET:-${FRAUD_BIGQUERY_DATASET:-fraud_analytics}}"
-
-cd dbt
-dbt deps
-dbt run
-"""
-        ),
-        env={
-            "FRAUD_PROJECT_ROOT": PROJECT_ROOT,
-            "FRAUD_GCP_PROJECT_ID": os.environ.get("FRAUD_GCP_PROJECT_ID", ""),
-            "FRAUD_BIGQUERY_DATASET": os.environ.get("FRAUD_BIGQUERY_DATASET", "fraud_analytics"),
-            "DBT_PROFILES_DIR": os.environ.get("DBT_PROFILES_DIR", str(Path(PROJECT_ROOT) / "dbt")),
-            "DBT_BIGQUERY_PROJECT": os.environ.get("DBT_BIGQUERY_PROJECT", ""),
-            "DBT_BIGQUERY_DATASET": os.environ.get("DBT_BIGQUERY_DATASET", "fraud_analytics"),
-            "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""),
-        },
+    wait_bq_load = DataprocBatchSensor(
+        task_id="wait_bq_load",
+        project_id=PROJECT_ID,
+        region=REGION,
+        batch_id="fraud-hourly-bq-load-{{ ts_nodash | lower }}",
+        gcp_conn_id="google_cloud_default",
+        timeout=60 * 35,
+        poke_interval=60,
     )
 
-    run_dbt_tests = BashOperator(
-        task_id="run_dbt_tests",
-        execution_timeout=timedelta(minutes=15),
-        append_env=True,
-        bash_command=build_bash(
-            """
-export DBT_PROFILES_DIR="${DBT_PROFILES_DIR:-${FRAUD_PROJECT_ROOT:-$PWD}/dbt}"
-export DBT_BIGQUERY_PROJECT="${DBT_BIGQUERY_PROJECT:-${FRAUD_GCP_PROJECT_ID}}"
-export DBT_BIGQUERY_DATASET="${DBT_BIGQUERY_DATASET:-${FRAUD_BIGQUERY_DATASET:-fraud_analytics}}"
-
-cd dbt
-dbt test
-"""
-        ),
-        env={
-            "FRAUD_PROJECT_ROOT": PROJECT_ROOT,
-            "FRAUD_GCP_PROJECT_ID": os.environ.get("FRAUD_GCP_PROJECT_ID", ""),
-            "FRAUD_BIGQUERY_DATASET": os.environ.get("FRAUD_BIGQUERY_DATASET", "fraud_analytics"),
-            "DBT_PROFILES_DIR": os.environ.get("DBT_PROFILES_DIR", str(Path(PROJECT_ROOT) / "dbt")),
-            "DBT_BIGQUERY_PROJECT": os.environ.get("DBT_BIGQUERY_PROJECT", ""),
-            "DBT_BIGQUERY_DATASET": os.environ.get("DBT_BIGQUERY_DATASET", "fraud_analytics"),
-            "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""),
+    run_dataform_models = DataformCreateWorkflowInvocationOperator(
+        task_id="run_dataform_models",
+        project_id=PROJECT_ID,
+        region=DATAFORM_REGION,
+        repository_id=DATAFORM_REPOSITORY_ID,
+        workflow_invocation={
+            "workflow_config": (
+                f"projects/{PROJECT_ID}/locations/{DATAFORM_REGION}/repositories/"
+                f"{DATAFORM_REPOSITORY_ID}/workflowConfigs/{DATAFORM_RUN_WORKFLOW_CONFIG_ID}"
+            )
         },
+        gcp_conn_id="google_cloud_default",
     )
 
-    validate_runtime >> run_hourly_batch >> load_batch_to_bigquery >> run_dbt_models >> run_dbt_tests
+    wait_dataform_models = DataformWorkflowInvocationStateSensor(
+        task_id="wait_dataform_models",
+        project_id=PROJECT_ID,
+        region=DATAFORM_REGION,
+        repository_id=DATAFORM_REPOSITORY_ID,
+        workflow_invocation_id=(
+            "{{ ti.xcom_pull(task_ids='run_dataform_models')['name'].split('/')[-1] }}"
+        ),
+        expected_statuses={WorkflowInvocation.State.SUCCEEDED},
+        failure_statuses={
+            WorkflowInvocation.State.FAILED,
+            WorkflowInvocation.State.CANCELLED,
+            WorkflowInvocation.State.CANCELING,
+        },
+        gcp_conn_id="google_cloud_default",
+        timeout=60 * 30,
+        poke_interval=30,
+    )
+
+    run_dataform_assertions = DataformCreateWorkflowInvocationOperator(
+        task_id="run_dataform_assertions",
+        project_id=PROJECT_ID,
+        region=DATAFORM_REGION,
+        repository_id=DATAFORM_REPOSITORY_ID,
+        workflow_invocation={
+            "workflow_config": (
+                f"projects/{PROJECT_ID}/locations/{DATAFORM_REGION}/repositories/"
+                f"{DATAFORM_REPOSITORY_ID}/workflowConfigs/{DATAFORM_ASSERT_WORKFLOW_CONFIG_ID}"
+            )
+        },
+        gcp_conn_id="google_cloud_default",
+    )
+
+    wait_dataform_assertions = DataformWorkflowInvocationStateSensor(
+        task_id="wait_dataform_assertions",
+        project_id=PROJECT_ID,
+        region=DATAFORM_REGION,
+        repository_id=DATAFORM_REPOSITORY_ID,
+        workflow_invocation_id=(
+            "{{ ti.xcom_pull(task_ids='run_dataform_assertions')['name'].split('/')[-1] }}"
+        ),
+        expected_statuses={WorkflowInvocation.State.SUCCEEDED},
+        failure_statuses={
+            WorkflowInvocation.State.FAILED,
+            WorkflowInvocation.State.CANCELLED,
+            WorkflowInvocation.State.CANCELING,
+        },
+        gcp_conn_id="google_cloud_default",
+        timeout=60 * 30,
+        poke_interval=30,
+    )
+
+    (
+        validate_runtime
+        >> run_hourly_batch
+        >> wait_hourly_batch
+        >> load_batch_to_bigquery
+        >> wait_bq_load
+        >> run_dataform_models
+        >> wait_dataform_models
+        >> run_dataform_assertions
+        >> wait_dataform_assertions
+    )

@@ -7,6 +7,7 @@ Consume Kafka `fraud_alerts` events and send notifications independently from Sp
 ## Available Consumer
 
 - `consumers/alert_email_consumer.py`
+- `consumers/alert_pubsub_consumer.py` (Local Pub/Sub pull worker)
 
 ## Prerequisites
 
@@ -40,6 +41,25 @@ python3 consumers/alert_email_consumer.py \
 ```bash
 ./scripts/kafka/kafka_topic_create.sh fraud_alerts
 python3 consumers/publish_test_alert.py --topic fraud_alerts --count 5
+```
+
+## Run Pub/Sub Consumer (Local)
+
+Run the Pub/Sub consumer in pull mode (recommended):
+
+```bash
+python3 consumers/alert_pubsub_consumer.py \
+  --pubsub-project-id "$GCP_PROJECT_ID" \
+  --pubsub-subscription "$ALERT_PULL_SUBSCRIPTION" \
+  --delivery-mode email \
+  --email-use-tls
+```
+
+Create the pull subscription once if needed:
+
+```bash
+gcloud pubsub subscriptions create "$ALERT_PULL_SUBSCRIPTION" \
+  --topic="$PUBSUB_FRAUD_ALERTS_TOPIC"
 ```
 
 ## Troubleshooting

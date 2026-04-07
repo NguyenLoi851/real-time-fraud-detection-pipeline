@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Run the orchestration pipelines in Dockerized Airflow.
+Run orchestration DAGs that support the cloud-native Composer + Dataproc + Dataform runtime.
 
 Pipeline DAGs:
 
@@ -11,8 +11,8 @@ Pipeline DAGs:
 
 ## Inputs and Outputs
 
-- Inputs: Silver scored transactions, labels history, runtime env vars.
-- Outputs: Curated parquet on GCS, BigQuery loaded tables, dbt warehouse refresh, refreshed model artifact.
+- Inputs: Silver scored transactions, labels history, Airflow Variables, Dataform workflow configs.
+- Outputs: Curated parquet on GCS, BigQuery loaded tables, Dataform warehouse transforms/assertions, refreshed model artifact.
 
 ## Prerequisites
 
@@ -33,12 +33,18 @@ Or generate `airflow/.env` from exported runtime variables:
 Update at least:
 
 - `FRAUD_GCP_PROJECT_ID`
-- `DBT_BIGQUERY_PROJECT`
-- `FRAUD_BIGQUERY_DATASET`
-- `FRAUD_BQ_RETRAINING_TABLE`
+- `GCP_GCS_BUCKET`
+- `FRAUD_BQ_DATASET`
+- `FRAUD_RETRAINING_TABLE`
 - `FRAUD_SILVER_PATH`
-- `FRAUD_BATCH_OUTPUT_BASE`
+- `FRAUD_HOURLY_OUTPUT_BASE`
 - `FRAUD_MODEL_OUTPUT`
+- `FRAUD_HOURLY_BATCH_PY_URI`
+- `FRAUD_HOURLY_BQ_LOAD_PY_URI`
+- `FRAUD_DAILY_MODEL_REFRESH_PY_URI`
+- `DATAFORM_REPOSITORY_ID`
+- `DATAFORM_RUN_WORKFLOW_CONFIG_ID`
+- `DATAFORM_ASSERT_WORKFLOW_CONFIG_ID`
 
 Optional for task alerts:
 
@@ -82,14 +88,39 @@ Stop stack:
 
 1. `validate_runtime`
 2. `run_hourly_batch`
-3. `load_batch_to_bigquery`
-4. `run_dbt_models`
-5. `run_dbt_tests`
+3. `wait_hourly_batch`
+4. `load_batch_to_bigquery`
+5. `wait_bq_load`
+6. `run_dataform_models`
+7. `wait_dataform_models`
+8. `run_dataform_assertions`
+9. `wait_dataform_assertions`
 
 ## Task Sequence (Daily Model DAG)
 
 1. `validate_runtime`
 2. `run_daily_model_refresh`
+3. `wait_daily_model_refresh`
+
+## Composer Deployment Helpers
+
+Use helper scripts for Cloud Composer:
+
+```bash
+chmod +x scripts/gcp/composer/*.sh
+```
+
+Set Airflow Variables in Composer:
+
+```bash
+bash scripts/gcp/composer/set_composer_airflow_variables.sh
+```
+
+Upload DAGs to Composer DAG bucket:
+
+```bash
+bash scripts/gcp/composer/sync_dags_to_composer.sh
+```
 
 ## Troubleshooting
 
