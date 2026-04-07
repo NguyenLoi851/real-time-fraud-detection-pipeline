@@ -17,7 +17,7 @@ Scope of this plan:
 | Stream scoring | Local Spark Structured Streaming | Dataproc Serverless Spark (or Dataflow in future) | Keep PySpark logic first, change source/sink adapters |
 | Batch reconciliation | Spark batch local/Docker | Dataproc Serverless batch | Reuse current Spark jobs with cloud packaging |
 | Orchestration | Airflow in Docker | Cloud Composer | Migrate DAGs with minimal behavior change |
-| Warehouse transform | dbt BigQuery | Dataform (BigQuery-native) | Run both in transition; eventually pick one primary |
+| Warehouse transform | dbt BigQuery | Dataform (BigQuery-native) | Dataform is the cloud-track transform engine; dbt remains only in archived legacy line |
 | Alerts consumer | Python Kafka consumer | Local Pub/Sub pull worker | Stateless email/webhook worker |
 | Data lake storage | Local filesystem + GCS | GCS | Bronze/Silver/Gold remains valid |
 | Serving warehouse | BigQuery | BigQuery | No change |
@@ -46,7 +46,7 @@ Recommended production-friendly approach:
 3. Use release tags for cloud milestones:
    - `v2.0-cloud-foundation`
    - `v2.1-composer-dataproc`
-   - `v2.2-dataform` (if adopted)
+  - `v2.2-dataform`
 
 Why this is standard:
 
@@ -69,8 +69,8 @@ Proposed additions:
 - `orchestration/`:
   - add Composer-ready DAG package and deployment notes
 - `warehouse/` (docs + config only at first):
-  - `dbt` remains transitional source of truth initially
-  - add `dataform/` when conversion starts
+  - add `dataform/` as cloud-track source of truth
+  - keep dbt assets out of active cloud runtime paths
 
 Why this structure works:
 
@@ -119,7 +119,32 @@ Exit criteria:
 
 - Hourly and daily jobs execute on Dataproc Serverless and produce expected outputs in GCS/BigQuery.
 
-## Phase 3: Orchestration Migration (Docker Airflow -> Composer) (3-5 days)
+## Phase 3: Warehouse Evolution (Dataform-First) (5-10 days)
+
+Deliverables:
+
+- Create equivalent Dataform project for a subset first:
+  - dimensions
+  - one fact
+  - one mart
+- Expand Dataform conversion to full required production model set.
+- Compare outputs (row count + key metric parity) during each conversion wave.
+
+Implementation notes:
+
+- All new and migrated warehouse logic is implemented only in Dataform.
+- Keep model naming and contract compatibility for downstream consumers during cutover.
+
+Decision gate:
+
+- No dual-engine decision path for cloud track: proceed with full Dataform migration.
+- Gate focuses on readiness to advance to Composer orchestration (parity, quality checks, and runbook completeness).
+
+Exit criteria:
+
+- Dataform produces parity-validated outputs for required production model scope.
+
+## Phase 4: Orchestration Migration (Docker Airflow -> Composer) (3-5 days)
 
 Deliverables:
 
@@ -127,36 +152,17 @@ Deliverables:
   - `airflow/dags/fraud_hourly_orchestration.py`
   - `airflow/dags/fraud_daily_model_refresh.py`
 - Replace local path assumptions with GCS/Composer env variables.
+- Replace dbt CLI task logic with Dataform workflow invocation pattern.
 - Add Composer deployment script and operations runbook.
 
 Implementation notes:
 
 - Keep task order identical to reduce regression risk.
-- First run Composer DAGs against existing dbt path.
+- First run Composer DAGs against Dataform targets in a staged environment.
 
 Exit criteria:
 
-- Scheduled runs succeed in Composer for hourly and daily pipelines.
-
-## Phase 4: Warehouse Evolution (dbt + Dataform transition) (5-10 days)
-
-Deliverables:
-
-- Keep dbt as default transform engine initially.
-- Create equivalent Dataform project for a subset:
-  - dimensions
-  - one fact
-  - one mart
-- Compare outputs (row count + key metric parity).
-
-Decision gate:
-
-- Option A: keep dbt as primary and stop Dataform expansion.
-- Option B: migrate fully to Dataform and keep dbt as fallback until stable.
-
-Exit criteria:
-
-- Documented recommendation with benchmark and ops trade-offs.
+- Scheduled runs succeed in Composer for hourly and daily pipelines using Dataform-backed transforms.
 
 ## Phase 5: Documentation and Contributor Experience (2-3 days)
 
@@ -182,7 +188,7 @@ Use standardized env variables across modules:
 - `MESSAGE_BACKEND=pubsub`
 - `ORCHESTRATOR_BACKEND=composer`
 - `SPARK_BACKEND=dataproc-serverless`
-- `TRANSFORM_BACKEND=dbt|dataform`
+- `TRANSFORM_BACKEND=dataform`
 
 Guideline:
 
@@ -197,7 +203,7 @@ Minimum validation suite per phase:
 1. Contract tests (schema + required columns).
 2. Data parity checks for one fixed hourly window.
 3. DAG task success checks with expected artifacts present.
-4. dbt/Dataform model quality checks (or equivalent assertions).
+4. Dataform model quality checks (or equivalent assertions).
 
 Recommended acceptance thresholds:
 
@@ -213,8 +219,8 @@ Recommended acceptance thresholds:
    Mitigation: explicit subscription strategy per consumer role.
 2. Spark connector/runtime differences in cloud.
    Mitigation: lock connector versions and add smoke tests on Dataproc.
-3. Dual-transform maintenance overhead (dbt + Dataform).
-   Mitigation: time-box coexistence and define decision gate in Phase 4.
+3. Dataform conversion scope and parity drift risk.
+  Mitigation: phase conversion by domain, enforce parity thresholds per wave, and block Composer handoff until parity checks pass.
 4. Cost increase from always-on managed services.
    Mitigation: start with scheduled/serverless jobs and budget alerts.
 
@@ -225,8 +231,8 @@ Recommended acceptance thresholds:
 1. Add GCP config profile and runtime variables.
 2. Add Pub/Sub producer and alert consumer path.
 3. Add Dataproc submission scripts for hourly/daily jobs.
-4. Add Composer environment + DAG deployment path.
-5. Add Dataform skeleton and first model parity checks.
+4. Add Dataform skeleton and first model parity checks.
+5. Add Composer environment + DAG deployment path wired to Dataform workflows.
 6. Publish cloud-native quickstart and legacy-version selection note.
 
 ---
