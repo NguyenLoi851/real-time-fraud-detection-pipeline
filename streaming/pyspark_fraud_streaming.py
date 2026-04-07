@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
-"""Real-time fraud scoring stream (Kafka -> PySpark -> Data Lake + Kafka alerts).
+"""Real-time fraud scoring stream (Pub/Sub -> PySpark -> Data Lake + Pub/Sub alerts).
 
 What this job does:
-- Reads transaction events from a Kafka input topic as a Spark Structured Streaming source.
-- Parses JSON payloads, enforces schema, and engineers fraud features per micro-batch.
+- Pulls transaction envelope events from a Pub/Sub subscription in micro-batches.
+- Parses payloads, enforces schema, and engineers fraud features per micro-batch.
 - Loads a pre-trained Spark PipelineModel and scores each transaction with `fraud_score`.
 - Applies alert rules (model score, high transfer amount, and velocity in 5-minute buckets).
 - Writes raw, scored, and alert datasets to bronze/silver/gold parquet paths.
-- Publishes alert records to a Kafka alerts topic for downstream consumers.
-
-Operational behavior:
-- Runs in micro-batch mode with `--trigger-seconds` (default 10s), so data is processed every N seconds.
-- Uses `checkpointLocation` (`--checkpoint-dir`) to store stream progress/state for fault tolerance and restart recovery.
-- Supports local paths and GCS paths for model/checkpoints/data lake outputs.
+- Publishes alert envelope events to a Pub/Sub topic for downstream consumers.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 from time import perf_counter
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Any
 
+from google.cloud import pubsub_v1
+from google.api_core import exceptions as gcloud_exceptions
 from pyspark import StorageLevel
 from pyspark.ml import PipelineModel
 from pyspark.ml.functions import vector_to_array
@@ -31,23 +33,77 @@ from pyspark.sql.types import DoubleType, IntegerType, StringType, StructField, 
 from pyspark.sql.window import Window
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def build_event_envelope(
+    *,
+    payload: dict[str, Any],
+    event_type: str,
+    source: str,
+    event_id: str | None = None,
+    emitted_at_utc: str | None = None,
+    schema_version: str = "1.0",
+) -> dict[str, Any]:
+    return {
+        "schema_version": schema_version,
+        "event_id": event_id or str(uuid.uuid4()),
+        "event_type": event_type,
+        "source": source,
+        "emitted_at_utc": emitted_at_utc or utc_now_iso(),
+        "payload": payload,
+    }
+
+
+def serialize_envelope(envelope: dict[str, Any]) -> bytes:
+    return json.dumps(envelope, separators=(",", ":"), default=str).encode("utf-8")
+
+
+def deserialize_envelope(raw: bytes) -> dict[str, Any]:
+    decoded = json.loads(raw.decode("utf-8"))
+    if not isinstance(decoded, dict):
+        raise ValueError("Envelope must be a JSON object")
+    if "payload" not in decoded or not isinstance(decoded["payload"], dict):
+        raise ValueError("Envelope must include object payload")
+    return decoded
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Local PySpark Kafka fraud scoring stream")
-    parser.add_argument("--bootstrap-servers", default="localhost:9092", help="Kafka bootstrap servers")
-    parser.add_argument("--input-topic", default="transactions_raw", help="Kafka input topic")
-    parser.add_argument("--alerts-topic", default="fraud_alerts", help="Kafka topic for fraud alerts")
-    parser.add_argument("--starting-offsets", default="latest", choices=["latest", "earliest"], help="Kafka offsets mode")
+    parser = argparse.ArgumentParser(description="Cloud-native PySpark Pub/Sub fraud scoring stream")
+    parser.add_argument(
+        "--pubsub-project-id",
+        default=os.getenv("GCP_PROJECT_ID", os.getenv("PUBSUB_PROJECT_ID", "")),
+        help="GCP project id used when subscription/topic names are not fully qualified",
+    )
+    parser.add_argument(
+        "--input-subscription",
+        default=os.getenv("TRANSACTIONS_PULL_SUBSCRIPTION", ""),
+        help="Pub/Sub subscription name or full path for transaction input",
+    )
+    parser.add_argument(
+        "--alerts-topic",
+        default=os.getenv("PUBSUB_FRAUD_ALERTS_TOPIC", "fraud_alerts"),
+        help="Pub/Sub topic id for fraud alerts",
+    )
     parser.add_argument("--model-path", default="ml/artifacts/fraud_rf_pipeline", help="Path to Spark pre-trained PipelineModel")
-    parser.add_argument("--checkpoint-dir", default="data/checkpoints/fraud_stream", help="Checkpoint directory")
     parser.add_argument("--datalake-raw-path", default="data/lake/bronze/transactions_raw", help="Raw records data lake path")
     parser.add_argument("--datalake-scored-path", default="data/lake/silver/scored_transactions", help="Scored records data lake path")
     parser.add_argument("--datalake-alerts-path", default="data/lake/gold/fraud_alerts", help="Alert records data lake path")
     parser.add_argument("--fraud-score-threshold", type=float, default=0.8, help="Threshold for high fraud score")
     parser.add_argument("--high-amount-threshold", type=float, default=200000.0, help="Amount threshold for transfer/cash-out alert rule")
     parser.add_argument("--velocity-threshold", type=int, default=5, help="Minimum velocity_5min to trigger alert rule")
-    parser.add_argument("--trigger-seconds", type=int, default=10, help="Micro-batch trigger interval")
-    parser.add_argument("--max-offset-per-trigger", type=int, default=1000, help="Max messages to process per micro-batch (limits batch size)")
+    parser.add_argument("--trigger-seconds", type=int, default=10, help="Loop sleep interval when no messages are available")
+    parser.add_argument("--pull-max-messages", type=int, default=1000, help="Max Pub/Sub messages to pull per micro-batch")
+    parser.add_argument("--pull-timeout-seconds", type=float, default=15.0, help="Pub/Sub pull timeout")
+    parser.add_argument("--ack-on-error", action="store_true", help="Acknowledge messages even when processing fails")
     parser.add_argument("--shuffle-partitions", type=int, default=8, help="Minimum number of shuffle partitions for Spark operations")
+    parser.add_argument(
+        "--output-partitions",
+        type=int,
+        default=1,
+        help="Maximum number of parquet files to create per output path for each micro-batch",
+    )
     return parser.parse_args()
 
 
@@ -110,7 +166,7 @@ def build_spark(
     gcs_credentials_file: str | None,
     shuffle_partitions: int = 8,
 ) -> SparkSession:
-    builder = SparkSession.builder.appName(app_name).master("local[*]")
+    builder = SparkSession.builder.appName(app_name)
 
     builder = (
         builder.config("spark.sql.shuffle.partitions", str(shuffle_partitions))
@@ -137,36 +193,98 @@ def is_cloud_uri(path: str) -> bool:
     return path.startswith("gs://")
 
 
+def build_subscription_path(args: argparse.Namespace, subscriber: pubsub_v1.SubscriberClient) -> str:
+    subscription = args.input_subscription.strip()
+    if subscription.startswith("projects/"):
+        return subscription
+    if not args.pubsub_project_id:
+        raise ValueError("Set --pubsub-project-id when --input-subscription is not a full resource path")
+    return subscriber.subscription_path(args.pubsub_project_id, subscription)
+
+
+def build_topic_path(args: argparse.Namespace, publisher: pubsub_v1.PublisherClient) -> str:
+    topic = args.alerts_topic.strip()
+    if topic.startswith("projects/"):
+        return topic
+    if not args.pubsub_project_id:
+        raise ValueError("Set --pubsub-project-id when --alerts-topic is not a full resource path")
+    return publisher.topic_path(args.pubsub_project_id, topic)
+
+
+def messages_to_dataframe(spark: SparkSession, messages: list[pubsub_v1.types.ReceivedMessage]) -> DataFrame:
+    records: list[dict[str, str]] = []
+    for msg in messages:
+        envelope = deserialize_envelope(msg.message.data)
+        payload = envelope.get("payload", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        records.append(
+            {
+                "source_topic": msg.message.attributes.get("source", "pubsub.subscription"),
+                "source_partition": "0",
+                "source_offset": msg.message.message_id,
+                "kafka_ingest_ts": msg.message.publish_time.isoformat() if msg.message.publish_time else "",
+                "step": str(payload.get("step", "")),
+                "type": str(payload.get("type", "")),
+                "amount": str(payload.get("amount", "")),
+                "nameOrig": str(payload.get("nameOrig", "")),
+                "oldbalanceOrg": str(payload.get("oldbalanceOrg", "")),
+                "newbalanceOrig": str(payload.get("newbalanceOrig", "")),
+                "nameDest": str(payload.get("nameDest", "")),
+                "oldbalanceDest": str(payload.get("oldbalanceDest", "")),
+                "newbalanceDest": str(payload.get("newbalanceDest", "")),
+                "event_emitted_at_utc": str(payload.get("event_emitted_at_utc", envelope.get("emitted_at_utc", ""))),
+            }
+        )
+    schema = StructType(
+        [
+            StructField("source_topic", StringType(), True),
+            StructField("source_partition", StringType(), True),
+            StructField("source_offset", StringType(), True),
+            StructField("kafka_ingest_ts", StringType(), True),
+            StructField("step", StringType(), True),
+            StructField("type", StringType(), True),
+            StructField("amount", StringType(), True),
+            StructField("nameOrig", StringType(), True),
+            StructField("oldbalanceOrg", StringType(), True),
+            StructField("newbalanceOrig", StringType(), True),
+            StructField("nameDest", StringType(), True),
+            StructField("oldbalanceDest", StringType(), True),
+            StructField("newbalanceDest", StringType(), True),
+            StructField("event_emitted_at_utc", StringType(), True),
+        ]
+    )
+    return spark.createDataFrame(records, schema=schema)
+
+
 def main() -> None:
     args = parse_args()
 
-    if args.max_offset_per_trigger < 1:
-        raise ValueError("--max-offset-per-trigger must be >= 1")
+    if args.pull_max_messages < 1:
+        raise ValueError("--pull-max-messages must be >= 1")
     if args.shuffle_partitions < 1:
         raise ValueError("--shuffle-partitions must be >= 1")
+    if args.output_partitions < 1:
+        raise ValueError("--output-partitions must be >= 1")
+    if not args.input_subscription.strip():
+        raise ValueError("Set --input-subscription to a Pub/Sub subscription name or full path")
     uses_gcs = any(
         is_cloud_uri(path)
-        for path in [args.model_path, args.checkpoint_dir, args.datalake_raw_path, args.datalake_scored_path, args.datalake_alerts_path]
+        for path in [args.model_path, args.datalake_raw_path, args.datalake_scored_path, args.datalake_alerts_path]
     )
     gcs_credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-
-    if uses_gcs and not gcs_credentials_file:
-        raise ValueError(
-            "GCS paths detected but GOOGLE_APPLICATION_CREDENTIALS is not set. "
-            "Set it to your service account key JSON file path."
-        )
 
     if not is_cloud_uri(args.model_path) and not Path(args.model_path).exists():
         raise FileNotFoundError(
             f"Pre-trained model not found: {args.model_path}. Train first with: spark-submit ml/train_fraud_model.py"
         )
 
-    for target_path in [args.checkpoint_dir, args.datalake_raw_path, args.datalake_scored_path, args.datalake_alerts_path]:
+    for target_path in [args.datalake_raw_path, args.datalake_scored_path, args.datalake_alerts_path]:
         if not is_cloud_uri(target_path):
             Path(target_path).mkdir(parents=True, exist_ok=True)
 
     spark = build_spark(
-        app_name="fraud-streaming-local-pyspark",
+        app_name="fraud-streaming-pubsub-pyspark",
         gcs_enabled=uses_gcs,
         gcs_credentials_file=gcs_credentials_file or None,
         shuffle_partitions=args.shuffle_partitions,
@@ -187,34 +305,13 @@ def main() -> None:
     )
 
     model = PipelineModel.load(args.model_path)
+    subscriber = pubsub_v1.SubscriberClient()
+    publisher = pubsub_v1.PublisherClient()
+    input_subscription_path = build_subscription_path(args, subscriber)
+    alerts_topic_path = build_topic_path(args, publisher)
+    batch_id = 0
 
-    kafka_options = {
-        "kafka.bootstrap.servers": args.bootstrap_servers,
-    }
-
-    raw_stream = (
-        spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", args.bootstrap_servers)
-        .option("subscribe", args.input_topic)
-        .option("startingOffsets", args.starting_offsets)
-        .option("maxOffsetsPerTrigger", args.max_offset_per_trigger)
-        .load()
-    )
-
-    json_schema = build_schema()
-
-    parsed_stream = (
-        raw_stream.select(
-            F.col("topic").alias("source_topic"),
-            F.col("partition").alias("source_partition"),
-            F.col("offset").alias("source_offset"),
-            F.col("timestamp").alias("kafka_ingest_ts"),
-            F.from_json(F.col("value").cast("string"), json_schema).alias("event"),
-        )
-        .select("source_topic", "source_partition", "source_offset", "kafka_ingest_ts", "event.*")
-    )
-
-    def process_batch(batch_df: DataFrame, batch_id: int) -> None:
+    def process_batch(batch_df: DataFrame, current_batch_id: int) -> int:
         batch_start = perf_counter()
         transform_plan_start = perf_counter()
 
@@ -291,43 +388,64 @@ def main() -> None:
 
         final_df = final_df.persist(StorageLevel.MEMORY_AND_DISK)
         alerts_df: DataFrame | None = None
+        alert_count = 0
         try:
             alerts_df = final_df.filter(F.col("is_alert")).persist(StorageLevel.MEMORY_AND_DISK)
 
-            alerts_kafka_df = alerts_df.select(
-                F.col("nameOrig").cast("string").alias("key"),
-                F.to_json(F.struct(*[F.col(c) for c in write_cols])).alias("value"),
-            )
+            alerts_collect_start = perf_counter()
+            for row in alerts_df.select(*write_cols).toLocalIterator():
+                alert_payload = row.asDict(recursive=True)
+                envelope = build_event_envelope(
+                    payload=alert_payload,
+                    event_type="fraud.alert",
+                    source="streaming.pyspark_fraud_streaming",
+                )
+                publisher.publish(
+                    alerts_topic_path,
+                    serialize_envelope(envelope),
+                    event_type=envelope["event_type"],
+                    source=envelope["source"],
+                    event_id=envelope["event_id"],
+                )
+                alert_count += 1
+            time_to_pubsub_alert_seconds = perf_counter() - alerts_collect_start
 
-            alerts_kafka_df.write.format("kafka").options(**kafka_options).option("topic", args.alerts_topic).save()
-            time_to_kafka_alert_seconds = perf_counter() - batch_start
+            compacted_output_partitions = min(args.output_partitions, max(1, final_df.rdd.getNumPartitions()))
 
             raw_write_start = perf_counter()
-            final_df.select(*raw_write_cols).write.mode("append").parquet(args.datalake_raw_path)
+            final_df.select(*raw_write_cols).coalesce(compacted_output_partitions).write.mode("append").parquet(
+                args.datalake_raw_path
+            )
             raw_write_seconds = perf_counter() - raw_write_start
 
             scored_write_start = perf_counter()
-            final_df.select(*write_cols).write.mode("append").parquet(args.datalake_scored_path)
+            final_df.select(*write_cols).coalesce(compacted_output_partitions).write.mode("append").parquet(
+                args.datalake_scored_path
+            )
             scored_write_seconds = perf_counter() - scored_write_start
 
             alerts_write_start = perf_counter()
-            alerts_df.select(*write_cols).write.mode("append").parquet(args.datalake_alerts_path)
+            if alert_count > 0:
+                alerts_df.select(*write_cols).coalesce(compacted_output_partitions).write.mode("append").parquet(
+                    args.datalake_alerts_path
+                )
             alerts_write_seconds = perf_counter() - alerts_write_start
 
             batch_duration_seconds = perf_counter() - batch_start
             print(
                 (
-                    f"Batch {batch_id}: timings "
+                    f"Batch {current_batch_id}: timings "
                     f"transform_plan_seconds={transform_plan_seconds:.2f} "
-                    f"time_to_kafka_alert_seconds={time_to_kafka_alert_seconds:.2f} "
+                    f"time_to_pubsub_alert_seconds={time_to_pubsub_alert_seconds:.2f} "
                     f"raw_write_seconds={raw_write_seconds:.2f} "
                     f"scored_write_seconds={scored_write_seconds:.2f} "
                     f"alerts_write_seconds={alerts_write_seconds:.2f} "
                     f"total_batch_seconds={batch_duration_seconds:.2f} "
+                    f"alerts_published={alert_count} "
                     f"raw={args.datalake_raw_path} "
                     f"scored={args.datalake_scored_path} "
                     f"alerts={args.datalake_alerts_path} "
-                    f"kafka_topic={args.alerts_topic}"
+                    f"pubsub_topic={alerts_topic_path}"
                 ),
                 flush=True,
             )
@@ -336,15 +454,42 @@ def main() -> None:
                 alerts_df.unpersist()
             final_df.unpersist()
 
-    query = (
-        parsed_stream.writeStream.foreachBatch(process_batch)
-        .option("checkpointLocation", args.checkpoint_dir)
-        .trigger(processingTime=f"{args.trigger_seconds} seconds")
-        .start()
+    print(
+        (
+            "Fraud Pub/Sub streaming job started "
+            f"subscription={input_subscription_path} alerts_topic={alerts_topic_path}"
+        ),
+        flush=True,
     )
 
-    print("Fraud streaming job started. Press Ctrl+C to stop.", flush=True)
-    query.awaitTermination()
+    while True:
+        try:
+            response = subscriber.pull(
+                request={"subscription": input_subscription_path, "max_messages": args.pull_max_messages},
+                timeout=args.pull_timeout_seconds,
+            )
+        except (gcloud_exceptions.DeadlineExceeded, gcloud_exceptions.ServiceUnavailable):
+            # Transient pull timeouts/unavailability should not terminate long-running streaming jobs.
+            continue
+        received_messages = list(response.received_messages)
+        if not received_messages:
+            time.sleep(max(float(args.trigger_seconds), 1.0))
+            continue
+
+        ack_ids: list[str] = []
+        try:
+            batch_df = messages_to_dataframe(spark, received_messages)
+            process_batch(batch_df, batch_id)
+            batch_id += 1
+            ack_ids = [message.ack_id for message in received_messages]
+        except Exception:
+            if args.ack_on_error:
+                ack_ids = [message.ack_id for message in received_messages]
+            else:
+                raise
+
+        if ack_ids:
+            subscriber.acknowledge(request={"subscription": input_subscription_path, "ack_ids": ack_ids})
 
 
 if __name__ == "__main__":
