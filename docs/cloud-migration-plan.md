@@ -1337,3 +1337,357 @@ Phase 3 is complete only when all are true:
 2. Assertions cover key non-null, uniqueness, and relationship checks.
 3. Wave-by-wave run evidence is recorded in operations documentation.
 4. Dataform workflow configs are runnable in fully managed cloud mode without local execution dependency.
+
+---
+
+## 16) Phase 4 Detailed Implementation Guide (Composer + Dataform Invocation)
+
+This section describes the implemented Phase 4 orchestration migration and how to run it in Cloud Composer.
+
+### 16.1 Implemented Phase 4 Assets in Repository
+
+Phase 4 implementation is now reflected in these repository paths:
+
+1. Composer-ready DAGs:
+  - `airflow/dags/fraud_hourly_orchestration.py`
+  - `airflow/dags/fraud_daily_model_refresh.py`
+2. Composer helper commands:
+  - `scripts/gcp/composer/sync_dags_to_composer.sh`
+  - `scripts/gcp/composer/set_composer_airflow_variables.sh`
+3. Updated environment templates/docs for orchestration:
+  - `airflow/.env.example`
+  - `scripts/airflow/write_airflow_env.sh`
+  - `airflow/README.md`
+
+### 16.2 What Changed in Orchestration Behavior
+
+The migration keeps the original orchestration intent but removes local Docker/dbt assumptions from the cloud runtime path.
+
+1. Hourly DAG now executes:
+  - Dataproc Serverless batch for hourly processing.
+  - Dataproc Serverless batch for hourly BigQuery load.
+  - Dataform workflow invocation for transforms.
+  - Dataform workflow invocation for assertions.
+2. Daily DAG now executes:
+  - Dataproc Serverless daily model refresh batch.
+3. Runtime configuration is sourced from Airflow Variables (Composer) with env var fallback.
+4. dbt CLI tasks are replaced by Dataform workflow invocation tasks.
+
+### 16.3 Prerequisites Before Deploying Composer DAGs
+
+1. Composer environment exists and is healthy.
+2. Dataform repository, release config, and workflow configs from Phase 3 are already created.
+3. Dataproc runtime service account and IAM from Phase 2 are already configured.
+4. GCS bucket exists for:
+  - code artifact staging (`gs://<bucket>/code/...`)
+  - lake paths (`gs://<bucket>/lake/...`)
+  - model artifacts (`gs://<bucket>/ml/artifacts/...`)
+5. Required APIs enabled:
+  - `composer.googleapis.com`
+  - `dataproc.googleapis.com`
+  - `dataform.googleapis.com`
+  - `bigquery.googleapis.com`
+  - `storage.googleapis.com`
+
+Enable APIs if needed:
+
+```bash
+gcloud services enable composer.googleapis.com dataproc.googleapis.com dataform.googleapis.com bigquery.googleapis.com storage.googleapis.com
+```
+
+### 16.4 Set Deployment Environment Variables
+
+### 16.4.1 How to Generate Values Before Exporting
+
+Use this discovery flow first, then run the export block in **16.4**.
+
+1. Authenticate and choose project:
+
+```bash
+gcloud auth login
+gcloud projects list
+gcloud config set project "<your-project-id>"
+```
+
+2. Discover Composer environment and region:
+
+```bash
+gcloud composer environments list --project "$(gcloud config get-value project)" --locations <your-location>
+```
+
+From the output, select:
+
+- `COMPOSER_ENV_NAME`
+- `COMPOSER_REGION`
+
+If the list is empty, create a dedicated Composer runtime service account first, then create Composer environment in UI.
+
+2.1 Create dedicated Composer runtime service account (recommended):
+
+```bash
+export GCP_PROJECT_ID="$(gcloud config get-value project)"
+export COMPOSER_SA_NAME="composer-fraud-runtime"
+export COMPOSER_RUNTIME_SA="${COMPOSER_SA_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create "${COMPOSER_SA_NAME}" \
+  --project "${GCP_PROJECT_ID}" \
+  --display-name "Composer Fraud Runtime"
+```
+
+Grant baseline roles to the Composer runtime service account:
+
+```bash
+gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+  --member "serviceAccount:${COMPOSER_RUNTIME_SA}" \
+  --role "roles/composer.worker"
+
+gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+  --member "serviceAccount:${COMPOSER_RUNTIME_SA}" \
+  --role "roles/storage.objectAdmin"
+
+gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+  --member "serviceAccount:${COMPOSER_RUNTIME_SA}" \
+  --role "roles/logging.logWriter"
+
+gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+  --member "serviceAccount:${COMPOSER_RUNTIME_SA}" \
+  --role "roles/monitoring.metricWriter"
+```
+
+2.2 Create Composer environment in Google Cloud Console UI:
+
+1. Open `Composer` in Cloud Console.
+2. Click `Create environment`.
+3. Choose `Composer 2`.
+4. Select region (recommended: `us-central1` unless your platform standards require another region).
+5. Set environment name (example: `fraud-orchestrator`).
+6. In service account selection, choose `COMPOSER_RUNTIME_SA` created in step 2.1.
+7. Select VPC and subnet aligned with your data platform networking.
+8. Choose environment size (start with Small for staged validation).
+9. Click `Create` and wait until status is healthy/running.
+
+Then set values explicitly:
+
+```bash
+export COMPOSER_ENV_NAME="fraud-orchestrator"
+export COMPOSER_REGION="us-central1"
+```
+
+3. Discover or create the GCS bucket used for lake and code artifacts:
+
+```bash
+gcloud storage buckets list --project "$(gcloud config get-value project)"
+```
+
+If needed, create one:
+
+```bash
+gcloud storage buckets create "gs://<your-lake-and-code-bucket>" \
+  --project "$(gcloud config get-value project)" \
+  --location "<your-region>"
+```
+
+4. Generate `GCP_DATAPROC_SERVICE_ACCOUNT` value:
+
+```bash
+export SA_NAME="dataproc-fraud-runtime"
+export GCP_PROJECT_ID="$(gcloud config get-value project)"
+export GCP_DATAPROC_SERVICE_ACCOUNT="${SA_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+```
+
+If not created yet, create it:
+
+```bash
+gcloud iam service-accounts create "${SA_NAME}" \
+  --project "${GCP_PROJECT_ID}" \
+  --display-name "Dataproc Fraud Runtime"
+```
+
+5. Discover subnet for `GCP_DATAPROC_SUBNET`:
+
+```bash
+gcloud compute networks subnets list \
+  --project "${GCP_PROJECT_ID}" \
+  --regions "<your-region>"
+```
+
+Then build value in this format:
+
+```bash
+projects/${GCP_PROJECT_ID}/regions/<your-region>/subnetworks/<your-subnet-name>
+```
+
+Set these once per shell session before deploying:
+
+```bash
+export GCP_PROJECT_ID="<your-project-id>"
+export GCP_REGION="us-central1"
+export COMPOSER_PROJECT_ID="${GCP_PROJECT_ID}"
+export COMPOSER_REGION="${GCP_REGION}"
+export COMPOSER_ENV_NAME="<your-composer-environment-name>"
+
+export GCP_GCS_BUCKET="<your-lake-and-code-bucket>"
+export GCP_DATAPROC_DEPS_BUCKET="${GCP_GCS_BUCKET}"
+export GCP_DATAPROC_SERVICE_ACCOUNT="dataproc-fraud-runtime@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+export GCP_DATAPROC_SUBNET="projects/${GCP_PROJECT_ID}/regions/${GCP_REGION}/subnetworks/<subnet-name>"
+export GCP_DATAPROC_SPARK_PROPERTIES="spark.dynamicAllocation.enabled=false,spark.driver.cores=4,spark.executor.instances=2,spark.executor.cores=4"
+
+export FRAUD_GCP_PROJECT_ID="${GCP_PROJECT_ID}"
+export FRAUD_SILVER_PATH="gs://${GCP_GCS_BUCKET}/lake/silver/scored_transactions"
+export FRAUD_LABELS_CSV="gs://${GCP_GCS_BUCKET}/inputs/transaction_log.csv"
+export FRAUD_HOURLY_OUTPUT_BASE="gs://${GCP_GCS_BUCKET}/lake/gold/hourly_batch"
+export FRAUD_BQ_DATASET="fraud_analytics"
+export FRAUD_RETRAINING_TABLE="retraining_dataset"
+export FRAUD_BQ_TEMP_BUCKET="${GCP_GCS_BUCKET}"
+export FRAUD_MODEL_OUTPUT="gs://${GCP_GCS_BUCKET}/ml/artifacts/fraud_rf_pipeline"
+
+export DATAFORM_REGION="${GCP_REGION}"
+export DATAFORM_REPOSITORY_ID="fraud-warehouse"
+export DATAFORM_RUN_WORKFLOW_CONFIG_ID="fraud-main"
+export DATAFORM_ASSERT_WORKFLOW_CONFIG_ID="fraud-assertions"
+
+export FRAUD_HOURLY_BATCH_PY_URI="gs://${GCP_GCS_BUCKET}/code/batch/hourly_batch_processing.py"
+export FRAUD_HOURLY_BQ_LOAD_PY_URI="gs://${GCP_GCS_BUCKET}/code/batch/load_hourly_batch_to_bigquery.py"
+export FRAUD_DAILY_MODEL_REFRESH_PY_URI="gs://${GCP_GCS_BUCKET}/code/batch/daily_model_refresh.py"
+```
+
+### 16.5 Upload Batch Entry Scripts to GCS Code Path
+
+The Composer DAGs submit Dataproc jobs from GCS URIs. Upload the Python entrypoints:
+
+```bash
+gsutil cp batch/hourly_batch_processing.py "${FRAUD_HOURLY_BATCH_PY_URI}"
+gsutil cp batch/load_hourly_batch_to_bigquery.py "${FRAUD_HOURLY_BQ_LOAD_PY_URI}"
+gsutil cp batch/daily_model_refresh.py "${FRAUD_DAILY_MODEL_REFRESH_PY_URI}"
+```
+
+Optional validation:
+
+```bash
+gsutil ls "${FRAUD_HOURLY_BATCH_PY_URI}"
+gsutil ls "${FRAUD_HOURLY_BQ_LOAD_PY_URI}"
+gsutil ls "${FRAUD_DAILY_MODEL_REFRESH_PY_URI}"
+```
+
+### 16.6 Set Composer Airflow Variables
+
+Run the helper command:
+
+```bash
+bash scripts/gcp/composer/set_composer_airflow_variables.sh
+```
+
+Manual fallback (single variable example):
+
+```bash
+gcloud composer environments run "${COMPOSER_ENV_NAME}" \
+  --location "${COMPOSER_REGION}" \
+  --project "${COMPOSER_PROJECT_ID}" \
+  variables set -- FRAUD_GCP_PROJECT_ID "${FRAUD_GCP_PROJECT_ID}"
+```
+
+### 16.7 Deploy DAG Files to Composer
+
+Run the helper command:
+
+```bash
+bash scripts/gcp/composer/sync_dags_to_composer.sh
+```
+
+Manual fallback:
+
+1. Get Composer DAG bucket path:
+
+```bash
+export DAG_GCS_PREFIX="$(gcloud composer environments describe "${COMPOSER_ENV_NAME}" \
+  --location "${COMPOSER_REGION}" \
+  --project "${COMPOSER_PROJECT_ID}" \
+  --format='value(config.dagGcsPrefix)')"
+
+echo "${DAG_GCS_PREFIX}"
+```
+
+2. Upload DAG files:
+
+```bash
+gsutil cp airflow/dags/fraud_hourly_orchestration.py "${DAG_GCS_PREFIX}/"
+gsutil cp airflow/dags/fraud_daily_model_refresh.py "${DAG_GCS_PREFIX}/"
+```
+
+Do not keep angle-bracket placeholders in these commands. `DAG_GCS_PREFIX` must be the real value returned from `config.dagGcsPrefix`.
+
+### 16.8 Run and Validate in Composer UI
+
+Use Cloud Console UI:
+
+1. Open `Composer` -> your environment -> `Open Airflow UI`.
+2. Confirm DAGs are visible:
+  - `fraud_hourly_batch_and_warehouse`
+  - `fraud_daily_model_refresh`
+3. Unpause both DAGs.
+4. Trigger manual validation runs from UI:
+  - Hourly DAG: trigger now and monitor each task state.
+  - Daily DAG: trigger now and monitor each task state.
+5. Confirm all tasks reach `success`.
+
+### 16.9 Run and Validate from Command Line
+
+Trigger hourly DAG:
+
+```bash
+gcloud composer environments run "${COMPOSER_ENV_NAME}" \
+  --location "${COMPOSER_REGION}" \
+  --project "${COMPOSER_PROJECT_ID}" \
+  dags trigger -- fraud_hourly_batch_and_warehouse
+```
+
+Trigger daily DAG:
+
+```bash
+gcloud composer environments run "${COMPOSER_ENV_NAME}" \
+  --location "${COMPOSER_REGION}" \
+  --project "${COMPOSER_PROJECT_ID}" \
+  dags trigger -- fraud_daily_model_refresh
+```
+
+List DAG runs:
+
+```bash
+gcloud composer environments run "${COMPOSER_ENV_NAME}" \
+  --location "${COMPOSER_REGION}" \
+  --project "${COMPOSER_PROJECT_ID}" \
+  dags list-runs -- fraud_hourly_batch_and_warehouse
+
+gcloud composer environments run "${COMPOSER_ENV_NAME}" \
+  --location "${COMPOSER_REGION}" \
+  --project "${COMPOSER_PROJECT_ID}" \
+  dags list-runs -- fraud_daily_model_refresh
+```
+
+### 16.10 Phase 4 Troubleshooting Checklist
+
+1. DAG import errors in Composer UI:
+  - Verify Google provider compatibility with Composer image.
+  - Verify Airflow Variables are set and not empty.
+2. Dataproc task fails quickly:
+  - Confirm `FRAUD_*_PY_URI` files exist in GCS.
+  - Confirm runtime service account has Dataproc, GCS, and BigQuery permissions.
+3. Dataform task fails:
+  - Confirm repository id, region, and workflow config ids are correct.
+  - Verify Dataform workflow config runs manually in Dataform UI.
+4. Quota or region errors:
+  - Tune `GCP_DATAPROC_SPARK_PROPERTIES` to valid Serverless shapes.
+  - Verify regional quota supports the configured shape.
+
+### 16.11 Exit Criteria for Phase 4 Completion
+
+Phase 4 is complete when:
+
+1. Both Composer DAGs are deployed and schedulable.
+2. Hourly run succeeds end-to-end:
+  - Dataproc hourly batch
+  - Dataproc BigQuery load
+  - Dataform transform invocation
+  - Dataform assertion invocation
+3. Daily model refresh run succeeds end-to-end in Composer.
+4. Run evidence (run ids, timestamps, success state) is recorded in operations notes.
