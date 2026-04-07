@@ -1,0 +1,5 @@
+config {
+  type: "declaration",
+  schema: dataform.projectConfig.vars.raw_dataset,
+  name: "curated_scored"
+}

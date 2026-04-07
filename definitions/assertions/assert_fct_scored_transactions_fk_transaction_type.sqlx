@@ -1,0 +1,13 @@
+config {
+  type: "assertion",
+  schema: "fraud_analytics_assertions",
+  name: "assert_fct_scored_transactions_fk_transaction_type",
+  tags: ["fraud-main", "assertions"]
+}
+
+select f.transaction_key
+from ${ref("fct_scored_transactions")} f
+left join ${ref("dim_transaction_type")} d
+  on f.transaction_type_key = d.transaction_type_key
+where f.transaction_type_key is not null
+  and d.transaction_type_key is null

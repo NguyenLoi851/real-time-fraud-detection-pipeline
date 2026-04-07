@@ -1061,3 +1061,279 @@ Dataproc batches are managed services and typically do not need manual cleanup a
 gsutil rm -r "$FRAUD_HOURLY_OUTPUT_BASE"
 gsutil rm -r "$FRAUD_MODEL_OUTPUT"
 ```
+
+---
+
+## 15) Phase 3 Detailed Implementation Guide (Dataform, Based on Current dbt Logic)
+
+This section is an operations-only runbook for Phase 3. Implementation code now lives in the repository under the Dataform project path, while this plan focuses on how to run and validate it.
+
+### 15.1 Implemented Dataform Assets in Repository
+
+The Dataform implementation is created in these locations:
+
+1. Project config:
+  - `dataform.json`
+  - `package.json`
+2. Shared helper:
+  - `includes/sql_utils.js`
+3. Source declarations:
+  - `definitions/sources/curated_scored.sqlx`
+  - `definitions/sources/monitoring_hourly.sqlx`
+4. Staging:
+  - `definitions/staging/stg_curated_scored.sqlx`
+  - `definitions/staging/stg_monitoring_hourly.sqlx`
+5. Dimensions:
+  - `definitions/dimensions/dim_transaction_type.sqlx`
+  - `definitions/dimensions/dim_account.sqlx`
+  - `definitions/dimensions/dim_time_hour.sqlx`
+6. Facts:
+  - `definitions/facts/fct_scored_transactions.sqlx`
+  - `definitions/facts/fct_fraud_alerts.sqlx`
+7. Mart:
+  - `definitions/marts/mart_fraud_hourly_kpis.sqlx`
+8. Relationship assertions:
+  - `definitions/assertions/assert_fct_scored_transactions_fk_transaction_type.sqlx`
+  - `definitions/assertions/assert_fct_scored_transactions_fk_origin_account.sqlx`
+  - `definitions/assertions/assert_fct_scored_transactions_fk_destination_account.sqlx`
+
+### 15.2 What Logic This Implementation Preserves
+
+The implemented Dataform graph keeps the same transformation behavior as current dbt models:
+
+1. Same input sources from raw BigQuery batch tables.
+2. Same staging cast logic and boolean normalization semantics.
+3. Same dimension key strategy for transaction type and account.
+4. Same transaction-level fact key hashing logic.
+5. Same alert-only fact filtering condition.
+6. Same hourly KPI mart aggregation and monitoring join behavior.
+7. Equivalent data-quality intent through Dataform assertions.
+
+### 15.3 Prerequisites for Fully Managed Cloud Execution
+
+This phase uses managed Dataform service only (no local Dataform CLI runtime in operations).
+
+Before running, ensure:
+
+1. GCP APIs are enabled:
+  - dataform.googleapis.com
+  - bigquery.googleapis.com
+  - secretmanager.googleapis.com
+2. BigQuery datasets exist and are accessible:
+  - source dataset: fraud_analytics
+  - target dataset: fraud_analytics_df
+  - assertion dataset: fraud_analytics_assertions
+3. Source tables are loaded by Phase 2 flow:
+  - curated_scored
+  - monitoring_hourly
+4. Dataform repository is connected to this Git repository and uses repository root as the Dataform project root.
+
+### 15.4 How to Run Dataform as Fully Managed Service (Without Composer)
+
+Use the Google Cloud Console Dataform UI for repository setup, release configuration, workflow configuration, and workflow invocations.
+
+1. Set environment and enable APIs.
+
+```bash
+export GCP_PROJECT_ID="<your-project-id>"
+export DATAFORM_REGION="us-central1"
+export DATAFORM_REPO_ID="fraud-warehouse"
+export DATAFORM_RELEASE_CONFIG_ID="prod"
+export DATAFORM_WORKFLOW_CONFIG_ID="fraud-main"
+
+gcloud config set project "$GCP_PROJECT_ID"
+gcloud services enable dataform.googleapis.com bigquery.googleapis.com secretmanager.googleapis.com
+```
+
+2. Create execution service account (first time only).
+
+```bash
+export DATAFORM_EXEC_SA="dataform-exec@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create dataform-exec \
+  --project="$GCP_PROJECT_ID" \
+  --display-name="Dataform Execution Service Account"
+```
+
+3. Grant minimum IAM for execution service account.
+
+```bash
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${DATAFORM_EXEC_SA}" \
+  --role="roles/bigquery.jobUser"
+
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${DATAFORM_EXEC_SA}" \
+  --role="roles/bigquery.dataEditor"
+
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member="serviceAccount:${DATAFORM_EXEC_SA}" \
+  --role="roles/bigquery.dataViewer"
+```
+
+4. Allow Dataform service agent to impersonate execution service account.
+
+```bash
+export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT_ID" --format='value(projectNumber)')
+export DATAFORM_SERVICE_AGENT="service-${PROJECT_NUMBER}@gcp-sa-dataform.iam.gserviceaccount.com"
+
+gcloud iam service-accounts add-iam-policy-binding "$DATAFORM_EXEC_SA" \
+  --member="serviceAccount:${DATAFORM_SERVICE_AGENT}" \
+  --role="roles/iam.serviceAccountUser"
+```
+
+5. Create Dataform repository (first time only).
+
+Use Google Cloud Console UI:
+
+- Open Dataform in Google Cloud Console.
+- Go to `Repositories` -> `Create repository`.
+- Set repository ID to `${DATAFORM_REPO_ID}` and region to `${DATAFORM_REGION}`.
+- Select execution service account `${DATAFORM_EXEC_SA}` during repository setup.
+- Dataform UI will suggest required IAM roles/bindings for the selected service account. Apply the suggested roles in UI.
+- Click `Create`.
+
+6. Configure repository settings in Dataform UI (one time):
+  - Connect Git remote and branch.
+  - Use repository root as the project root.
+  - Confirm Dataform workflow settings files are detected at repository root.
+  - If Git connection fails with `secretmanager.versions.access`, grant `roles/secretmanager.secretAccessor` on the Git credential secret to the default Dataform service agent or the selected execution service account.
+
+7. Create release config in Dataform UI for managed compilation/execution.
+  - Open the repository in Google Cloud Console.
+  - Go to `Release configurations` and create a new release config.
+  - Set the git commitish to `main`.
+  - Set the default project/database to `GCP_PROJECT_ID`.
+  - Set the default schema to `fraud_analytics_df`.
+  - Set the assertion schema to `fraud_analytics_assertions`.
+  - Set the execution service account to `DATAFORM_EXEC_SA`.
+
+8. Create workflow config in Dataform UI for managed runs.
+  - Go to `Workflow configurations` and create a new workflow config.
+  - Attach it to the release config created in the previous step.
+  - Select the actions or tags for the Wave A subset first.
+
+9. Run Wave A from the Dataform UI.
+  - Open the workflow config.
+  - Click `Run` to start a workflow invocation.
+  - Use the invocation details page to inspect logs and status.
+
+10. Check workflow run status in the Dataform UI.
+  - Open `Workflow invocations` to review recent runs.
+  - Confirm the run reaches `Succeeded` before promoting the next wave.
+
+Operational recommendation:
+
+1. Use a dedicated Wave A workflow config first.
+2. Add full-model workflow config after Wave A parity passes.
+3. Keep manual cloud invocation in this phase; Composer trigger is handled in later phase.
+
+### 15.5 How to Validate Parity Against Existing dbt Outputs
+
+Use side-by-side comparison between:
+
+1. Existing dbt dataset output.
+2. New Dataform dataset output.
+
+For each wave, validate:
+
+1. Row-count parity per equivalent model.
+2. Key KPI parity on hourly fraud metrics.
+3. Required-column presence and nullability contract.
+
+Command-line parity checks (run from Cloud Shell or any environment with bq access):
+
+1. Confirm both datasets exist.
+
+```bash
+bq ls "${GCP_PROJECT_ID}:fraud_analytics"
+bq ls "${GCP_PROJECT_ID}:fraud_analytics_df"
+```
+
+2. Row-count parity for scored fact.
+
+```bash
+bq query --use_legacy_sql=false "
+select
+  'fct_scored_transactions' as model_name,
+  (select count(*) from \`${GCP_PROJECT_ID}.fraud_analytics.fct_scored_transactions\`) as dbt_count,
+  (select count(*) from \`${GCP_PROJECT_ID}.fraud_analytics_df.fct_scored_transactions\`) as dataform_count,
+  safe_divide(
+    abs(
+      (select count(*) from \`${GCP_PROJECT_ID}.fraud_analytics_df.fct_scored_transactions\`) -
+      (select count(*) from \`${GCP_PROJECT_ID}.fraud_analytics.fct_scored_transactions\`)
+    ),
+    nullif((select count(*) from \`${GCP_PROJECT_ID}.fraud_analytics.fct_scored_transactions\`), 0)
+  ) as relative_delta
+"
+```
+
+3. KPI parity for hourly mart.
+
+```bash
+bq query --use_legacy_sql=false "
+with dbt_kpi as (
+  select event_hour_utc, transaction_type, observed_fraud_rate
+  from \`${GCP_PROJECT_ID}.fraud_analytics.mart_fraud_hourly_kpis\`
+),
+df_kpi as (
+  select event_hour_utc, transaction_type, observed_fraud_rate
+  from \`${GCP_PROJECT_ID}.fraud_analytics_df.mart_fraud_hourly_kpis\`
+)
+select
+  coalesce(d.event_hour_utc, f.event_hour_utc) as event_hour_utc,
+  coalesce(d.transaction_type, f.transaction_type) as transaction_type,
+  d.observed_fraud_rate as dbt_rate,
+  f.observed_fraud_rate as dataform_rate,
+  abs(coalesce(f.observed_fraud_rate, 0) - coalesce(d.observed_fraud_rate, 0)) as abs_delta
+from dbt_kpi d
+full outer join df_kpi f
+  on d.event_hour_utc = f.event_hour_utc
+ and d.transaction_type = f.transaction_type
+order by event_hour_utc desc, transaction_type
+"
+```
+
+4. Check required columns exist in Dataform outputs.
+
+```bash
+bq show --schema --format=prettyjson "${GCP_PROJECT_ID}:fraud_analytics_df.fct_scored_transactions"
+bq show --schema --format=prettyjson "${GCP_PROJECT_ID}:fraud_analytics_df.mart_fraud_hourly_kpis"
+```
+
+Accept migration wave only if thresholds remain within plan limits:
+
+1. Row-count delta per hourly table at or below 0.5%.
+2. Fraud-rate KPI delta at or below 1% relative difference.
+3. Zero missing required columns.
+
+### 15.6 Runbook for CI and Scheduled Execution
+
+For CI in this phase (without Composer):
+
+1. Trigger Dataform managed workflow invocation by API/CLI after merge to main.
+2. Poll invocation state until succeeded or failed.
+3. Block release if invocation fails or if parity checks fail.
+
+Example manual execution pattern:
+
+1. Open the Dataform repository in Google Cloud Console.
+2. Open the target workflow config.
+3. Click `Run` to create a workflow invocation.
+4. Review invocation logs and status in the UI.
+5. Gate release promotion on a successful run and parity checks.
+
+Scheduled execution in this phase:
+
+1. Use Dataform workflow config scheduling in Dataform service, or
+2. Use Cloud Scheduler + Cloud Run/Cloud Function wrapper to call Dataform API.
+3. Keep Composer integration deferred to Phase 4.
+
+### 15.7 Definition of Done for Phase 3
+
+Phase 3 is complete only when all are true:
+
+1. Dataform outputs are parity-validated for required production model scope.
+2. Assertions cover key non-null, uniqueness, and relationship checks.
+3. Wave-by-wave run evidence is recorded in operations documentation.
+4. Dataform workflow configs are runnable in fully managed cloud mode without local execution dependency.
