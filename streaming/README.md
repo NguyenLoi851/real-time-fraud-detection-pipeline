@@ -55,6 +55,8 @@ spark-submit \
   --fraud-score-threshold 0.80
 ```
 
+If the lake output is producing too many small parquet files, set `FRAUD_OUTPUT_PARTITIONS=1` for Dataproc batches or pass `--output-partitions 1` directly to keep each micro-batch compact.
+
 ## Validate Output Samples
 
 ```bash
