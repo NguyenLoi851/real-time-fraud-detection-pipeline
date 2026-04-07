@@ -1,29 +1,73 @@
 # Real-Time Fraud Detection Pipeline
 
-Hybrid streaming + batch platform for fraud detection with Kafka, Spark, GCS, BigQuery, dbt, and Airflow.
+Streaming + batch fraud detection platform with two supported runtime lines: cloud-native on GCP (current) and legacy on-prem/hybrid (tagged).
 
 Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 
+## Supported Runtime Profiles
+
+| Runtime Profile | Version Line | Core Services | Runbook |
+|---|---|---|---|
+| Cloud-native (current) | `main` | Pub/Sub, Dataproc Serverless, GCS, BigQuery, Dataform, Composer | [docs/runbook-cloud.md](docs/runbook-cloud.md) |
+| Legacy local/hybrid (on-prem style) | `v1-onprem` tag | Kafka, Spark local, Airflow Docker, dbt, optional GCP services | [docs/runbook-local.md](docs/runbook-local.md), [docs/runbook-hybrid.md](docs/runbook-hybrid.md) |
+
 ## Project Goal
 
-- Detect suspicious transactions in near real time.
-- Publish high-risk alerts to Kafka for downstream consumers.
-- Persist Bronze/Silver/Gold datasets in lake storage.
-- Reconcile predictions with labels in hourly batch.
-- Retrain the fraud model daily from curated/retraining data.
-- Build warehouse facts/dimensions/marts in BigQuery via dbt.
-- Orchestrate hourly warehouse refresh and daily ML retraining with Airflow.
+- Shared goals across both runtime lines:
+  - Detect suspicious transactions in near real time.
+  - Persist Bronze/Silver/Gold datasets in lake storage.
+  - Reconcile predictions with labels in hourly batch.
+  - Retrain the fraud model daily from curated/retraining data.
+  - Build warehouse facts/dimensions/marts for BI consumption.
+- Cloud-native (`main`):
+  - Messaging through Pub/Sub.
+  - Streaming and batch Spark on Dataproc Serverless.
+  - Warehouse transforms through Dataform on BigQuery.
+  - Scheduled orchestration with Cloud Composer.
+- Legacy on-prem/hybrid (`v1-onprem`):
+  - Messaging through Kafka.
+  - Spark Structured Streaming and Spark batch on local/hybrid runtime.
+  - Warehouse transforms through dbt on BigQuery.
+  - Orchestration with Airflow (Docker).
+
+## Current Runtime (Main Branch)
+
+This branch is the cloud-native implementation and is designed to run on GCP managed services.
+
+Primary GCP services used:
+
+- Pub/Sub (event transport for transactions and alerts)
+- Dataproc Serverless (streaming, hourly batch, daily model refresh)
+- Cloud Storage (Bronze/Silver/Gold lake paths, checkpoints, model artifacts)
+- BigQuery (serving warehouse datasets)
+- Dataform (warehouse transforms and assertions)
+- Cloud Composer (scheduled orchestration)
 
 ## Architecture (High Level)
 
 ![Data Pipeline Architecture](images/data-pipeline-architecture.png)
 
+Cloud-native flow (`main`):
+
+1. Simulator produces transaction events.
+2. Pub/Sub ingests raw events on `transactions_raw`.
+3. Dataproc Serverless Spark Structured Streaming scores events and emits:
+  - lake raw/scored/alerts outputs
+  - Pub/Sub alert events on `fraud_alerts`
+4. Dataproc Serverless hourly batch prepares curated and monitoring/retraining datasets.
+5. BigQuery load jobs ingest curated outputs.
+6. Dataform builds warehouse models.
+7. Cloud Composer orchestrates hourly warehouse refresh plus daily model retraining.
+8. Tableau visualizes KPI marts.
+
+Legacy on-prem/hybrid flow (`v1-onprem`):
+
 1. Simulator produces transaction events.
 2. Kafka ingests raw events on `transactions_raw`.
 3. Spark Structured Streaming scores events and emits:
-   - lake raw/scored/alerts outputs
-   - Kafka alert events on `fraud_alerts`
-4. Hourly Spark batch prepares curated and monitoring/retraining datasets.
+  - lake raw/scored/alerts outputs
+  - Kafka alert events on `fraud_alerts`
+4. Spark hourly batch prepares curated and monitoring/retraining datasets.
 5. BigQuery load jobs ingest curated outputs.
 6. dbt builds warehouse models.
 7. Airflow orchestrates hourly warehouse refresh plus daily model retraining.
@@ -38,6 +82,7 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 - Documentation ownership map: [docs/documentation-map.md](docs/documentation-map.md)
 - Shared prerequisites: [docs/prerequisites.md](docs/prerequisites.md)
 - End-to-end local runbook: [docs/runbook-local.md](docs/runbook-local.md)
+- End-to-end hybrid runbook (legacy line): [docs/runbook-hybrid.md](docs/runbook-hybrid.md)
 - End-to-end cloud runbook: [docs/runbook-cloud.md](docs/runbook-cloud.md)
 - Operations and troubleshooting: [docs/operations.md](docs/operations.md)
 - Tableau chart build guide: [docs/tableau-chart-instructions.md](docs/tableau-chart-instructions.md)
@@ -46,8 +91,8 @@ Dataset source (PaySim): https://www.kaggle.com/datasets/ealaxi/paysim1
 
 This repository supports two usage paths through version selection:
 
-- Legacy local/hybrid runtime (Kafka/Spark local + optional GCP services): use the `v1-onprem` tag.
-- Cloud-native runtime on GCP: use the main branch.
+- Cloud-native runtime on GCP (current): use `main`.
+- Legacy runtime with Kafka/Spark/Airflow/dbt: use `v1-onprem`.
 
 How to select mode:
 
@@ -57,24 +102,23 @@ How to select mode:
 git fetch --all --tags
 ```
 
-2. Run local/ hybrid version (example):
-
-```bash
-git checkout tags/v1-onprem -b v1-onprem
-```
-
-3. Run cloud-native version:
+2. Run cloud-native version:
 
 ```bash
 git checkout main
 git pull
 ```
 
+3. Run legacy Kafka/Spark/Airflow version (example):
+
+```bash
+git checkout tags/v1-onprem -b v1-onprem
+```
+
 After selecting a version, use:
 
-- For local: use [docs/runbook-local.md](docs/runbook-local.md).
-- For hybrid: use [docs/runbook-hybrid.md](docs/runbook-hybrid.md).
 - For cloud-native: use [docs/runbook-cloud.md](docs/runbook-cloud.md).
+- For legacy local/hybrid: use [docs/runbook-local.md](docs/runbook-local.md) and [docs/runbook-hybrid.md](docs/runbook-hybrid.md).
 
 ## Module Guides
 
@@ -87,23 +131,25 @@ After selecting a version, use:
 - Airflow orchestration: [airflow/README.md](airflow/README.md)
 - BI dashboards: [dashboards/README.md](dashboards/README.md)
 
-## Quick Start (Local)
-
-1. Complete setup in [docs/prerequisites.md](docs/prerequisites.md).
-2. Prepare dataset in [data/README.md](data/README.md).
-3. Execute [docs/runbook-local.md](docs/runbook-local.md).
-
-## Quick Start (Hybrid)
-
-1. Complete setup in [docs/prerequisites.md](docs/prerequisites.md).
-2. Prepare dataset in [data/README.md](data/README.md).
-3. Execute [docs/runbook-hybrid.md](docs/runbook-hybrid.md).
-
-## Quick Start (cloud-native)
+## Quick Start (Cloud-Native)
 
 1. Complete setup in [docs/prerequisites.md](docs/prerequisites.md).
 2. Provision foundation with [infra/terraform/README.md](infra/terraform/README.md).
 3. Execute [docs/runbook-cloud.md](docs/runbook-cloud.md).
+
+## Quick Start (Legacy Local/Hybrid)
+
+If you need Kafka/Spark/Airflow/dbt flows, switch to the legacy tag first:
+
+```bash
+git fetch --all --tags
+git checkout tags/v1-onprem -b v1-onprem
+```
+
+Then choose one runbook based on runtime:
+
+1. Local only: [docs/runbook-local.md](docs/runbook-local.md)
+2. Hybrid (local + optional GCP services): [docs/runbook-hybrid.md](docs/runbook-hybrid.md)
 
 ## Documentation Rules
 
@@ -112,6 +158,8 @@ After selecting a version, use:
 - Module READMEs contain only module-specific behavior and commands.
 
 ## Questions
+
+Note: cloud-native defaults on `main` use Pub/Sub and Dataform. Kafka/dbt references below apply to the legacy `v1-onprem` line.
 
 **In this pipeline, which steps are Extract / Load / Transform?**
 
